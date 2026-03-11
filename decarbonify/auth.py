@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import datetime as _dt
 import hashlib
 import hmac
 import json
@@ -19,6 +20,13 @@ import streamlit as st
 
 _GOOGLE_USER_KEY = "google_user"
 _OAUTH_REDIRECTING_KEY = "oauth_redirecting"
+_AUTH_COOKIE_NAME = "decarbonify_auth"
+_COOKIE_MANAGER_KEY = "decarbonify_cookie_manager"
+_LAST_OAUTH_CODE_KEY = "last_oauth_code"
+_COOKIE_BOOTSTRAP_KEY = "cookie_bootstrapped"
+_LOGOUT_SUPPRESS_RESTORE_UNTIL_KEY = "logout_suppress_restore_until"
+
+_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file"
 
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -95,6 +103,12 @@ def _get_google_config() -> Dict[str, Any]:
     return cfg
 
 
+def google_config() -> Dict[str, Any]:
+    """Public accessor for the merged Google config (secrets + env)."""
+
+    return _get_google_config()
+
+
 def _b64url_encode(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
@@ -110,6 +124,127 @@ def _state_signing_key(cfg: Dict[str, Any]) -> str:
     if not key:
         raise RuntimeError("Missing google.client_secret (or google.state_secret) for OAuth state signing")
     return key
+
+
+def _cookie_signing_key(cfg: Dict[str, Any]) -> str:
+    # Use the same key material as OAuth state signing by default.
+    return _state_signing_key(cfg)
+
+
+def _cookie_ttl_days(cfg: Dict[str, Any]) -> int:
+    raw = cfg.get("session_days")
+    try:
+        days = int(raw)
+    except Exception:
+        days = 14
+    return max(1, min(days, 90))
+
+
+def _b64url_json(payload: Dict[str, Any]) -> str:
+    return _b64url_encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+
+
+def _sign_b64(payload_b64: str, *, key: str) -> str:
+    return hmac.new(key.encode("utf-8"), payload_b64.encode("ascii"), hashlib.sha256).hexdigest()
+
+
+def _create_auth_cookie_value(profile: Dict[str, Any], *, cfg: Dict[str, Any]) -> str:
+    now = int(time.time())
+    exp = now + _cookie_ttl_days(cfg) * 86400
+    payload = {
+        "email": _safe_str(profile.get("email")).lower(),
+        "name": _safe_str(profile.get("name")),
+        "picture": _safe_str(profile.get("picture")),
+        "rt": _safe_str(profile.get("refresh_token")),
+        "iat": now,
+        "exp": exp,
+    }
+    payload_b64 = _b64url_json(payload)
+    sig = _sign_b64(payload_b64, key=_cookie_signing_key(cfg))
+    return f"{payload_b64}.{sig}"
+
+
+def _parse_auth_cookie_value(value: str, *, cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    try:
+        payload_b64, sig = (value or "").split(".", 1)
+        expected = _sign_b64(payload_b64, key=_cookie_signing_key(cfg))
+        if not secrets.compare_digest(expected, sig):
+            return None
+        payload = json.loads(_b64url_decode(payload_b64).decode("utf-8"))
+        if not isinstance(payload, dict):
+            return None
+        exp = int(payload.get("exp", 0) or 0)
+        if exp <= int(time.time()):
+            return None
+        email = _safe_str(payload.get("email")).lower()
+        if not email:
+            return None
+        return {
+            "email": email,
+            "name": _safe_str(payload.get("name")),
+            "picture": _safe_str(payload.get("picture")),
+            "refresh_token": _safe_str(payload.get("rt")),
+        }
+    except Exception:
+        return None
+
+
+def _cookie_manager():
+    try:
+        import extra_streamlit_components as stx  # type: ignore
+
+        return stx.CookieManager(key=_COOKIE_MANAGER_KEY)
+    except Exception:
+        return None
+
+
+def _restore_user_from_cookie(*, cfg: Dict[str, Any]) -> bool:
+    cm = _cookie_manager()
+    if cm is None:
+        return False
+    try:
+        value = cm.get(_AUTH_COOKIE_NAME)
+    except Exception:
+        value = None
+    if not isinstance(value, str) or not value:
+        return False
+    profile = _parse_auth_cookie_value(value, cfg=cfg)
+    if not profile:
+        return False
+    if not _allowed_email(_safe_str(profile.get("email"))):
+        return False
+    st.session_state[_GOOGLE_USER_KEY] = profile
+    return True
+
+
+def _persist_user_cookie(profile: Dict[str, Any], *, cfg: Dict[str, Any]) -> None:
+    cm = _cookie_manager()
+    if cm is None:
+        return
+    try:
+        value = _create_auth_cookie_value(profile, cfg=cfg)
+        expires_at = _dt.datetime.utcnow() + _dt.timedelta(days=_cookie_ttl_days(cfg))
+        cm.set(_AUTH_COOKIE_NAME, value, expires_at=expires_at)
+    except Exception:
+        # Best-effort; auth still works without persistence.
+        return
+
+
+def _clear_user_cookie(*, cfg: Dict[str, Any]) -> None:
+    cm = _cookie_manager()
+    if cm is None:
+        return
+    try:
+        # Some cookie managers/browsers behave better with an explicit expiry in the past.
+        expires_at = _dt.datetime.utcnow() - _dt.timedelta(days=2)
+        try:
+            cm.set(_AUTH_COOKIE_NAME, "", expires_at=expires_at)
+        except Exception:
+            pass
+
+        cm.delete(_AUTH_COOKIE_NAME)
+    except Exception:
+        return
 
 
 def _create_oauth_state(*, cfg: Dict[str, Any]) -> str:
@@ -175,12 +310,38 @@ def current_user_profile() -> Optional[Dict[str, Any]]:
     return user if isinstance(user, dict) else None
 
 
+def current_refresh_token() -> str:
+    profile = current_user_profile() or {}
+    return _safe_str(profile.get("refresh_token"))
+
+
 def logout() -> None:
+    cfg = _get_google_config()
+    # Prevent immediate re-auth via cookie restore during the next rerun(s).
+    st.session_state[_LOGOUT_SUPPRESS_RESTORE_UNTIL_KEY] = int(time.time()) + 20
+    _clear_user_cookie(cfg=cfg)
     for key in [
         _GOOGLE_USER_KEY,
+        _OAUTH_REDIRECTING_KEY,
+        _LAST_OAUTH_CODE_KEY,
+        _COOKIE_BOOTSTRAP_KEY,
         "selected_node_id",
         "asset_tree_initialized",
+        "asset_tree_last_key",
+        "asset_tree_nonce",
         "chat_messages",
+        "auth_user_email",
+        "portfolio",
+        "portfolio_source",
+        "uploaded_name",
+        "portfolio_fp",
+        "emissions_overrides",
+        "emissions_overrides_user",
+        "emissions_overrides_loaded",
+        "portfolio_storage_key",
+        "portfolio_storage_name",
+        "drive_access_token",
+        "drive_access_token_exp",
     ]:
         if key in st.session_state:
             del st.session_state[key]
@@ -230,7 +391,7 @@ def _http_json(url: str, *, method: str, data: Optional[Dict[str, str]] = None, 
     raise RuntimeError("Unexpected response from OAuth endpoint")
 
 
-def _build_google_auth_url(*, state: str) -> str:
+def _build_google_auth_url(*, state: str, prompt: str) -> str:
     cfg = _get_google_config()
     client_id = _safe_str(cfg.get("client_id"))
     redirect_uri = _safe_str(cfg.get("redirect_uri"))
@@ -241,10 +402,10 @@ def _build_google_auth_url(*, state: str) -> str:
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": "openid email profile",
+        "scope": f"openid email profile {_DRIVE_SCOPE}",
         "state": state,
-        "prompt": "select_account",
-        "access_type": "online",
+        "prompt": prompt,
+        "access_type": "offline",
         "include_granted_scopes": "true",
     }
     return f"{GOOGLE_AUTH_URL}?{urllib.parse.urlencode(params)}"
@@ -286,14 +447,25 @@ def require_login(*, app_name: str = "Decarbonify") -> str:
     If authenticated, returns the user's email. Otherwise renders a Sign in with Google button and stops.
     """
 
-    user_email = current_user()
-    if user_email:
-        return user_email
-
     cfg = _get_google_config()
     if not _safe_str(cfg.get("client_id")) or not _safe_str(cfg.get("client_secret")) or not _safe_str(cfg.get("redirect_uri")):
         st.error("Google auth is not configured. Set Streamlit Secrets: google.client_id, google.client_secret, google.redirect_uri")
         st.stop()
+
+    user_email = current_user()
+    if user_email:
+        # Best-effort: refresh persistence so a missed cookie write can't
+        # cause logouts across restarts.
+        profile = current_user_profile()
+        if isinstance(profile, dict) and profile.get("email"):
+            _persist_user_cookie(profile, cfg=cfg)
+        return user_email
+
+    # If the user just clicked logout, don't immediately restore from cookie.
+    suppress_until = int(st.session_state.get(_LOGOUT_SUPPRESS_RESTORE_UNTIL_KEY, 0) or 0)
+    if suppress_until > int(time.time()):
+        _clear_user_cookie(cfg=cfg)
+        # Continue to sign-in UI below.
 
     qp = _get_query_params()
     code = (qp.get("code") or [""])[0]
@@ -307,13 +479,37 @@ def require_login(*, app_name: str = "Decarbonify") -> str:
         _clear_query_params()
         st.stop()
 
+    # Cookie manager bootstrap: on a fresh session (e.g. server restart),
+    # the CookieManager component may need one rerun before previously-set
+    # cookies are available to Python. Trigger a one-time rerun so we can
+    # restore auth without forcing the user to click anything.
+    if (
+        suppress_until <= int(time.time())
+        and not code
+        and not current_user()
+        and not st.session_state.get(_COOKIE_BOOTSTRAP_KEY)
+    ):
+        if _cookie_manager() is not None:
+            st.session_state[_COOKIE_BOOTSTRAP_KEY] = True
+            st.rerun()
+
     # Callback handling
     if code:
         if _OAUTH_REDIRECTING_KEY in st.session_state:
             del st.session_state[_OAUTH_REDIRECTING_KEY]
+
+        # Guard against duplicate processing: Streamlit may rerun the script during component init,
+        # and Google auth codes are single-use.
+        if st.session_state.get(_LAST_OAUTH_CODE_KEY) == code:
+            _clear_query_params()
+            st.stop()
+        st.session_state[_LAST_OAUTH_CODE_KEY] = code
+
         if not _verify_oauth_state(state or "", cfg=cfg):
             st.error("Invalid OAuth state. Please try signing in again.")
             _clear_query_params()
+            if _LAST_OAUTH_CODE_KEY in st.session_state:
+                del st.session_state[_LAST_OAUTH_CODE_KEY]
             st.stop()
 
         try:
@@ -321,6 +517,7 @@ def require_login(*, app_name: str = "Decarbonify") -> str:
             access_token = _safe_str(token.get("access_token"))
             if not access_token:
                 raise RuntimeError("No access_token returned")
+            refresh_token = _safe_str(token.get("refresh_token"))
             info = _fetch_userinfo(access_token)
             email = _safe_str(info.get("email")).lower()
             if not email:
@@ -334,15 +531,29 @@ def require_login(*, app_name: str = "Decarbonify") -> str:
                 "email": email,
                 "name": _safe_str(info.get("name")),
                 "picture": _safe_str(info.get("picture")),
+                # May be empty unless prompt=consent and user grants offline access.
+                "refresh_token": refresh_token,
             }
+            _persist_user_cookie(st.session_state[_GOOGLE_USER_KEY], cfg=cfg)
             _clear_query_params()
+            if _LAST_OAUTH_CODE_KEY in st.session_state:
+                del st.session_state[_LAST_OAUTH_CODE_KEY]
             st.rerun()
         except Exception as exc:
             if _OAUTH_REDIRECTING_KEY in st.session_state:
                 del st.session_state[_OAUTH_REDIRECTING_KEY]
+            if _LAST_OAUTH_CODE_KEY in st.session_state:
+                del st.session_state[_LAST_OAUTH_CODE_KEY]
             st.error(f"Google sign-in failed: {exc}")
             _clear_query_params()
             st.stop()
+
+    # Restore from a signed cookie to survive full page refresh.
+    # Do this only when we're not in the middle of an OAuth callback.
+    if suppress_until <= int(time.time()) and _restore_user_from_cookie(cfg=cfg):
+        user_email = current_user()
+        if user_email:
+            return user_email
 
     # Start login
     st.subheader("Sign in")
@@ -350,7 +561,9 @@ def require_login(*, app_name: str = "Decarbonify") -> str:
 
     state_token = _create_oauth_state(cfg=cfg)
     try:
-        auth_url = _build_google_auth_url(state=state_token)
+        # Ask for consent only if we don't have a refresh token yet.
+        prompt = "consent" if not current_refresh_token() else "select_account"
+        auth_url = _build_google_auth_url(state=state_token, prompt=prompt)
     except Exception as exc:
         st.error(str(exc))
         st.stop()

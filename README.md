@@ -53,12 +53,26 @@ client_id = "..."
 client_secret = "..."
 redirect_uri = "http://localhost:8501/"  # or your Streamlit Cloud URL
 
+# Optional: persist edits to the user's Google Drive
+# (creates a visible "Decarbonify" folder and saves one JSON per portfolio)
+# drive_enabled = true
+# drive_folder = "Decarbonify"
+
 # Optional restrictions (recommended)
 # allowed_domains = ["yourcompany.com"]
 # allowed_emails = ["alice@yourcompany.com"]
 ```
 
 If you set `allowed_domains` or `allowed_emails`, only those accounts can sign in.
+
+### Google Drive persistence
+
+If enabled, the app will request Drive access and store one JSON file per portfolio in a visible folder (default: `Decarbonify`) in the signed-in user's Google Drive.
+
+Google Cloud requirements:
+
+- Enable the **Google Drive API** for your project.
+- Ensure the OAuth consent screen is configured to allow the Drive scope.
 
 ### Local dev without a secrets file
 

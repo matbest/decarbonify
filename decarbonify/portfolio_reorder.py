@@ -14,6 +14,7 @@ class PortfolioReorderError(ValueError):
 class PreorderRef:
     node_id: str
     parent_id: Optional[str]
+    depth: int
     asset: Dict[str, Any]
     parent_list: List[Dict[str, Any]]
     index_in_parent: int
@@ -23,38 +24,39 @@ def iter_preorder_refs(
     assets: List[Dict[str, Any]],
     *,
     parent_id: Optional[str],
-    id_prefix: str,
+    depth: int,
+    id_key: str = "_id",
 ) -> Iterable[PreorderRef]:
     for idx, asset in enumerate(assets):
         if not isinstance(asset, dict):
             continue
-        node_id = f"{id_prefix}.{idx}"
+        node_id = safe_str(asset.get(id_key))
         yield PreorderRef(
             node_id=node_id,
             parent_id=parent_id,
+            depth=depth,
             asset=asset,
             parent_list=assets,
             index_in_parent=idx,
         )
         children = as_list(asset.get("assets"))
         if children:
-            yield from iter_preorder_refs(children, parent_id=node_id, id_prefix=node_id)
+            yield from iter_preorder_refs(children, parent_id=node_id, depth=depth + 1, id_key=id_key)
 
 
 def build_preorder_index(portfolio: Dict[str, Any]) -> List[PreorderRef]:
     roots = as_list(portfolio.get("assets"))
-    return list(iter_preorder_refs(roots, parent_id=None, id_prefix="a"))
+    return list(iter_preorder_refs(roots, parent_id=None, depth=0, id_key="_id"))
 
 
 def _subtree_end_index(pre: List[PreorderRef], start_idx: int) -> int:
-    node_id = pre[start_idx].node_id
-    prefix = node_id + "."
+    start_depth = pre[start_idx].depth
     end = start_idx
     for j in range(start_idx + 1, len(pre)):
-        if pre[j].node_id.startswith(prefix):
+        if pre[j].depth > start_depth:
             end = j
-        else:
-            break
+            continue
+        break
     return end
 
 

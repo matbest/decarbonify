@@ -1,3 +1,4 @@
 streamlit
 openai>=1.0.0
 streamlit-arborist>=0.3.0
+extra-streamlit-components>=0.1.60

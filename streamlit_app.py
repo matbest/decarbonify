@@ -2,21 +2,34 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import streamlit as st
 
 from decarbonify import auth
 from decarbonify.portfolio_index import index_portfolio
-from decarbonify.portfolio_io import as_list, load_portfolio_from_bytes, load_portfolio_from_path, safe_str
+from decarbonify.portfolio_io import (
+    as_list,
+    ensure_asset_ids,
+    load_portfolio_from_bytes,
+    load_portfolio_from_path,
+    safe_str,
+)
 from decarbonify.portfolio_reorder import PortfolioReorderError, can_move_preorder, move_preorder
 from decarbonify.recommendations import openai_client_available
+from decarbonify.state_store import load_portfolio_state, save_portfolio_state
 from decarbonify.ui_asset_detail import render_asset_detail_and_recommendations
 from decarbonify.ui_chat import render_chat
 from decarbonify.ui_sidebar import inject_sidebar_nowrap_css, render_asset_hierarchy_sidebar
 
 
 DEFAULT_PORTFOLIO_PATH = "portfolio.json"
+
+
+def _portfolio_storage_key(*, source: str, uploaded_name: Optional[str]) -> str:
+    if source == "Upload JSON" and uploaded_name:
+        return f"upload::{uploaded_name}"
+    return f"path::{DEFAULT_PORTFOLIO_PATH}"
 
 
 def _portfolio_fingerprint(portfolio: Dict[str, Any]) -> str:
@@ -29,13 +42,6 @@ def _portfolio_fingerprint(portfolio: Dict[str, Any]) -> str:
 def _deepcopy_jsonable(value: Any) -> Any:
     # Good enough for this app's JSON-shaped portfolio.
     return json.loads(json.dumps(value, ensure_ascii=False))
-
-
-def _find_node_id_by_data_obj_id(nodes, target_obj_id: int) -> str:
-    for n in nodes:
-        if id(n.data) == target_obj_id:
-            return n.node_id
-    return ""
 
 
 @st.cache_data(show_spinner=False)
@@ -72,7 +78,11 @@ inject_sidebar_nowrap_css()
 st.title("Portfolio Carbon Insight Tool")
 
 # Login gate
-auth.require_login(app_name="Decarbonify")
+user_email = auth.require_login(app_name="Decarbonify")
+st.session_state.auth_user_email = user_email
+
+google_cfg = auth.google_config()
+refresh_token = auth.current_refresh_token()
 
 header_left, header_right = st.columns([0.78, 0.22], gap="small")
 
@@ -100,6 +110,11 @@ except Exception as exc:
     st.error(str(exc))
     st.stop()
 
+portfolio_name_loaded = safe_str(loaded_portfolio.get("portfolio_name")) or "Portfolio"
+storage_key = _portfolio_storage_key(source=source, uploaded_name=(uploaded.name if uploaded is not None else None))
+st.session_state.portfolio_storage_key = storage_key
+st.session_state.portfolio_storage_name = portfolio_name_loaded
+
 
 # Keep an editable in-memory portfolio (no persistence) so we can reorder.
 if (
@@ -107,7 +122,22 @@ if (
     or st.session_state.get("portfolio_source") != source
     or (source == "Upload JSON" and uploaded is not None and st.session_state.get("uploaded_name") != uploaded.name)
 ):
-    st.session_state.portfolio = _deepcopy_jsonable(loaded_portfolio)
+    # Prefer a previously-saved Drive state for this user/portfolio.
+    restored = load_portfolio_state(
+        cfg=google_cfg,
+        refresh_token=refresh_token,
+        user_key=user_email,
+        portfolio_key=storage_key,
+        portfolio_name=portfolio_name_loaded,
+    )
+    if restored is not None:
+        restored_portfolio, restored_overrides = restored
+        st.session_state.portfolio = _deepcopy_jsonable(restored_portfolio)
+        st.session_state.emissions_overrides = dict(restored_overrides)
+    else:
+        st.session_state.portfolio = _deepcopy_jsonable(loaded_portfolio)
+        if "emissions_overrides" not in st.session_state:
+            st.session_state.emissions_overrides = {}
     st.session_state.portfolio_source = source
     st.session_state.uploaded_name = uploaded.name if uploaded is not None else None
     st.session_state.asset_tree_initialized = False
@@ -116,16 +146,10 @@ if (
 
 portfolio: Dict[str, Any] = st.session_state.portfolio
 
-nodes, node_by_id = index_portfolio(portfolio)
+# Ensure stable ids exist for all assets (idempotent).
+ensure_asset_ids(portfolio, id_key="_id")
 
-if "pending_select_asset_obj_id" in st.session_state:
-    pending_id = int(st.session_state.pending_select_asset_obj_id)
-    new_selected = _find_node_id_by_data_obj_id(nodes, pending_id)
-    if new_selected:
-        st.session_state.selected_node_id = new_selected
-        st.session_state.asset_tree_initialized = False
-        st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
-    del st.session_state.pending_select_asset_obj_id
+nodes, node_by_id = index_portfolio(portfolio)
 
 current_fp = _portfolio_fingerprint(portfolio)
 if st.session_state.get("portfolio_fp") != current_fp:
@@ -158,6 +182,7 @@ with st.sidebar:
         nodes=nodes,
         node_by_id=node_by_id,
         selected_node_id=str(st.session_state.selected_node_id),
+        emissions_overrides=st.session_state.get("emissions_overrides"),
         tree_key=tree_key,
     )
     st.session_state.selected_node_id = selected_node_id
@@ -169,8 +194,18 @@ with st.sidebar:
         with up_col:
             if st.button("Up", use_container_width=True, disabled=not can_up):
                 try:
-                    moved, _op = move_preorder(portfolio, node_id=st.session_state.selected_node_id, direction=-1)
-                    st.session_state.pending_select_asset_obj_id = id(moved)
+                    move_preorder(portfolio, node_id=st.session_state.selected_node_id, direction=-1)
+
+                    save_portfolio_state(
+                        cfg=google_cfg,
+                        refresh_token=refresh_token,
+                        user_key=user_email,
+                        portfolio_key=st.session_state.get("portfolio_storage_key", storage_key),
+                        portfolio_name=safe_str(st.session_state.get("portfolio_storage_name", portfolio_name_loaded)),
+                        portfolio=portfolio,
+                        emissions_overrides=st.session_state.get("emissions_overrides") or {},
+                    )
+
                     st.session_state.asset_tree_initialized = False
                     st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
                     st.rerun()
@@ -179,8 +214,18 @@ with st.sidebar:
         with down_col:
             if st.button("Down", use_container_width=True, disabled=not can_down):
                 try:
-                    moved, _op = move_preorder(portfolio, node_id=st.session_state.selected_node_id, direction=1)
-                    st.session_state.pending_select_asset_obj_id = id(moved)
+                    move_preorder(portfolio, node_id=st.session_state.selected_node_id, direction=1)
+
+                    save_portfolio_state(
+                        cfg=google_cfg,
+                        refresh_token=refresh_token,
+                        user_key=user_email,
+                        portfolio_key=st.session_state.get("portfolio_storage_key", storage_key),
+                        portfolio_name=safe_str(st.session_state.get("portfolio_storage_name", portfolio_name_loaded)),
+                        portfolio=portfolio,
+                        emissions_overrides=st.session_state.get("emissions_overrides") or {},
+                    )
+
                     st.session_state.asset_tree_initialized = False
                     st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
                     st.rerun()

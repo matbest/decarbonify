@@ -23,14 +23,14 @@ def iter_assets_tree(
     parent_id: Optional[str],
     depth: int,
     parent_path: str,
-    id_prefix: str,
+    id_key: str = "_id",
 ) -> Iterable[AssetNode]:
     for idx, asset in enumerate(assets):
         if not isinstance(asset, dict):
             continue
         name = safe_str(asset.get("name", f"Unnamed {idx}"))
         asset_type = safe_str(asset.get("type", "asset"))
-        node_id = f"{id_prefix}.{idx}"
+        node_id = safe_str(asset.get(id_key))
         path = name if not parent_path else f"{parent_path} / {name}"
         yield AssetNode(
             node_id=node_id,
@@ -48,7 +48,7 @@ def iter_assets_tree(
                 parent_id=node_id,
                 depth=depth + 1,
                 parent_path=path,
-                id_prefix=node_id,
+                id_key=id_key,
             )
 
 
@@ -60,7 +60,7 @@ def index_portfolio(portfolio: Dict[str, Any]) -> Tuple[List[AssetNode], Dict[st
             parent_id=None,
             depth=0,
             parent_path=safe_str(portfolio.get("portfolio_name", "Portfolio")),
-            id_prefix="a",
+            id_key="_id",
         )
     )
     return nodes, {n.node_id: n for n in nodes}
