@@ -7,7 +7,40 @@ from typing import Any, Dict, List
 import streamlit as st
 
 from .portfolio_index import AssetNode, iter_assets_tree
-from .portfolio_io import as_list, ensure_asset_data_fields, ensure_asset_ids
+from .portfolio_io import as_list, ensure_asset_ids
+
+
+# Backward-compat shim: some deployments may not yet have ensure_asset_data_fields.
+try:
+    from .portfolio_io import ensure_asset_data_fields  # type: ignore
+except Exception:  # pragma: no cover
+    def ensure_asset_data_fields(portfolio: Dict[str, Any]) -> None:  # type: ignore
+        def walk(assets: Any) -> None:
+            for asset in as_list(assets):
+                if not isinstance(asset, dict):
+                    continue
+                fields = asset.get("data_fields")
+                if not isinstance(fields, dict):
+                    fields = {}
+                    asset["data_fields"] = fields
+                key = "emissions_tco2e_per_year"
+                entry = fields.get(key)
+                if not isinstance(entry, dict):
+                    entry = {"label": "Emissions", "kind": "number", "unit": "tCO2e/year"}
+                    fields[key] = entry
+                derived = entry.get("derived")
+                if not isinstance(derived, dict):
+                    derived = {}
+                    entry["derived"] = derived
+                derived.setdefault("value", None)
+                manual = entry.get("manual")
+                if not isinstance(manual, dict):
+                    manual = {}
+                    entry["manual"] = manual
+                manual.setdefault("value", None)
+                walk(asset.get("assets"))
+
+        walk(portfolio.get("assets"))
 from .portfolio_io import safe_str
 from . import auth
 from .portfolio_edit import (

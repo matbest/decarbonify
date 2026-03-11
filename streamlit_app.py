@@ -12,11 +12,49 @@ from decarbonify.portfolio_index import index_portfolio
 from decarbonify.portfolio_io import (
     as_list,
     ensure_asset_ids,
-    ensure_asset_data_fields,
     load_portfolio_from_bytes,
     load_portfolio_from_path,
     safe_str,
 )
+
+
+# Backward-compat shim: some deployments may not yet have ensure_asset_data_fields.
+try:
+    from decarbonify.portfolio_io import ensure_asset_data_fields  # type: ignore
+except Exception:  # pragma: no cover
+    def ensure_asset_data_fields(portfolio: Dict[str, Any]) -> None:  # type: ignore
+        def walk(assets: Any) -> None:
+            if not isinstance(assets, list):
+                return
+            for asset in assets:
+                if not isinstance(asset, dict):
+                    continue
+                fields = asset.get("data_fields")
+                if not isinstance(fields, dict):
+                    fields = {}
+                    asset["data_fields"] = fields
+
+                key = "emissions_tco2e_per_year"
+                entry = fields.get(key)
+                if not isinstance(entry, dict):
+                    entry = {"label": "Emissions", "kind": "number", "unit": "tCO2e/year"}
+                    fields[key] = entry
+
+                derived = entry.get("derived")
+                if not isinstance(derived, dict):
+                    derived = {}
+                    entry["derived"] = derived
+                derived.setdefault("value", None)
+
+                manual = entry.get("manual")
+                if not isinstance(manual, dict):
+                    manual = {}
+                    entry["manual"] = manual
+                manual.setdefault("value", None)
+
+                walk(asset.get("assets"))
+
+        walk(portfolio.get("assets"))
 from decarbonify.portfolio_reorder import PortfolioReorderError, can_move_preorder, move_preorder
 from decarbonify.recommendations import openai_client_available
 from decarbonify.state_store import load_portfolio_state, save_portfolio_state
