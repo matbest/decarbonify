@@ -34,6 +34,16 @@ GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
 
 
+def _boolish(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return False
+
+
 @dataclass(frozen=True)
 class AuthResult:
     ok: bool
@@ -396,14 +406,7 @@ def _build_google_auth_url(*, state: str, prompt: str) -> str:
         raise RuntimeError("Missing google.client_id or google.redirect_uri in Streamlit Secrets")
 
     # Request Drive access only when explicitly enabled.
-    drive_enabled_raw = cfg.get("drive_enabled")
-    drive_enabled = False
-    if isinstance(drive_enabled_raw, bool):
-        drive_enabled = drive_enabled_raw
-    elif isinstance(drive_enabled_raw, (int, float)):
-        drive_enabled = bool(drive_enabled_raw)
-    elif isinstance(drive_enabled_raw, str):
-        drive_enabled = drive_enabled_raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+    drive_enabled = _boolish(cfg.get("drive_enabled"))
 
     scopes = ["openid", "email", "profile"]
     if drive_enabled:
@@ -577,20 +580,44 @@ def require_login(*, app_name: str = "Decarbonify") -> str:
     state_token = _create_oauth_state(cfg=cfg)
     try:
         # Ask for consent only if we don't have a refresh token yet.
-        drive_enabled_raw = cfg.get("drive_enabled")
-        drive_enabled = False
-        if isinstance(drive_enabled_raw, bool):
-            drive_enabled = drive_enabled_raw
-        elif isinstance(drive_enabled_raw, (int, float)):
-            drive_enabled = bool(drive_enabled_raw)
-        elif isinstance(drive_enabled_raw, str):
-            drive_enabled = drive_enabled_raw.strip().lower() in {"1", "true", "yes", "y", "on"}
-
+        drive_enabled = _boolish(cfg.get("drive_enabled"))
         prompt = "consent" if (drive_enabled and not current_refresh_token()) else "select_account"
         auth_url = _build_google_auth_url(state=state_token, prompt=prompt)
     except Exception as exc:
         st.error(str(exc))
         st.stop()
+
+    # Optional debug panel to diagnose OAuth issues (e.g. Google-branded 403).
+    # Enable by setting `google.debug_oauth = true` in Streamlit Secrets.
+    if _boolish(cfg.get("debug_oauth")):
+        try:
+            parsed = urllib.parse.urlparse(auth_url)
+            q = urllib.parse.parse_qs(parsed.query)
+            client_id = _safe_str(cfg.get("client_id"))
+            client_id_redacted = (client_id[:10] + "…" + client_id[-6:]) if len(client_id) > 18 else (client_id[:6] + "…")
+
+            st.info("OAuth debug is enabled (google.debug_oauth=true).")
+            st.write(
+                {
+                    "redirect_uri": _safe_str(cfg.get("redirect_uri")),
+                    "client_id": client_id_redacted,
+                    "drive_enabled": drive_enabled,
+                    "prompt": prompt,
+                    "scope": (q.get("scope") or [""])[0],
+                }
+            )
+            st.text_area(
+                "Auth URL (copy/paste into browser to reproduce)",
+                value=auth_url,
+                height=120,
+                disabled=True,
+            )
+            st.caption(
+                "If Google rejects this with a 403, check: (1) OAuth consent screen user type/publishing status, "
+                "(2) test users, (3) authorized redirect URIs EXACT match (including trailing slash)."
+            )
+        except Exception:
+            pass
 
     if st.session_state.get(_OAUTH_REDIRECTING_KEY):
         st.info("Redirecting to Google sign-in…")
