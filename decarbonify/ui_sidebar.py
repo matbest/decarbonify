@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import streamlit as st
 
-from .emissions import effective_emissions_tco2e_per_year
+from .emissions import is_retired
 from .portfolio_index import AssetNode
 from .portfolio_io import as_list, safe_str
 
@@ -20,39 +20,96 @@ def _truncate_one_line(text: str, *, max_chars: int = 60) -> str:
     return text[: max_chars - 1].rstrip() + "…"
 
 
-def _compute_subtree_totals_tco2e(
+def _strike(text: str) -> str:
+    """Best-effort strike-through using Unicode combining overlay.
+
+    Works in plain-text widgets (Arborist node names, radio fallback).
+    """
+
+    s = safe_str(text)
+    if not s:
+        return s
+    overlay = "\u0336"
+    out = []
+    for ch in s:
+        if ch.isspace():
+            out.append(ch)
+        else:
+            out.append(ch + overlay)
+    return "".join(out)
+
+
+def _asset_savings_tco2_per_year(asset: Dict[str, Any]) -> Tuple[float, float]:
+    """Return (done, possible) savings for a single asset.
+
+    - done: sum of savings for recommendations with done=True
+    - possible: sum of savings for currently cached recommendations
+    """
+
+    done = 0.0
+    possible = 0.0
+
+    asset_id = safe_str(asset.get("_id"))
+    cache_map: Dict[str, float] = {}
+    cache_by_asset = st.session_state.get("recommendations_cache_by_asset_id")
+    cache = None
+    if isinstance(cache_by_asset, dict) and asset_id:
+        cache = cache_by_asset.get(asset_id)
+
+    if isinstance(cache, list):
+        for row in cache:
+            if not isinstance(row, dict):
+                continue
+            rid = safe_str(row.get("id"))
+            if not rid:
+                continue
+            try:
+                v = float(row.get("saving_tco2_per_year", 0) or 0)
+            except Exception:
+                v = 0.0
+            cache_map[rid] = v
+            possible += v
+
+    status = asset.get("recommendation_status")
+    if isinstance(status, dict):
+        for rid, st0 in status.items():
+            if not isinstance(st0, dict):
+                continue
+            if not bool(st0.get("done")):
+                continue
+            try:
+                v = float(st0.get("saving_tco2_per_year", cache_map.get(str(rid), 0)) or 0)
+            except Exception:
+                v = float(cache_map.get(str(rid), 0))
+            done += v
+
+    return float(done), float(possible)
+
+
+def _compute_subtree_savings(
     assets: List[Dict[str, Any]],
     *,
     id_key: str = "_id",
-) -> Dict[str, Optional[float]]:
-    """Return mapping of asset_id -> subtree total tCO2e/year.
 
-    A subtree total includes the asset itself and all descendants.
-    If no values exist anywhere in the subtree, the mapped value is None.
-    """
+) -> Dict[str, Tuple[float, float]]:
+    """Return mapping of asset_id -> (done, possible) savings totals for the subtree."""
 
-    totals: Dict[str, Optional[float]] = {}
+    totals: Dict[str, Tuple[float, float]] = {}
 
-    def walk(asset: Dict[str, Any]) -> Tuple[float, int]:
-        total = 0.0
-        contributing = 0
-
-        v = effective_emissions_tco2e_per_year(asset)
-        if v is not None:
-            contributing += 1
-            total += max(0.0, float(v))
+    def walk(asset: Dict[str, Any]) -> Tuple[float, float]:
+        done, possible = _asset_savings_tco2_per_year(asset)
 
         for child in as_list(asset.get("assets")):
             if not isinstance(child, dict):
                 continue
-            c_total, c_contrib = walk(child)
-            total += c_total
-            contributing += c_contrib
+            c_done, c_possible = walk(child)
+            done += c_done
+            possible += c_possible
 
         asset_id = safe_str(asset.get(id_key))
         if asset_id:
-            totals[asset_id] = total if contributing > 0 else None
-        return total, contributing
+            totals[asset_id] = (float(done), float(possible))
+        return float(done), float(possible)
 
     for a in assets:
         if isinstance(a, dict):
@@ -60,18 +117,16 @@ def _compute_subtree_totals_tco2e(
     return totals
 
 
-def _format_subtree_suffix(asset_id: str, *, subtree_totals: Mapping[str, Optional[float]]) -> str:
-    total = subtree_totals.get(asset_id)
-    if total is None:
-        return " [?]"
-    return f" [{float(total):.2f}]"
+def _format_subtree_suffix(asset_id: str, *, subtree_totals: Mapping[str, Tuple[float, float]]) -> str:
+    done, possible = subtree_totals.get(asset_id, (0.0, 0.0))
+    return f" [{float(done):.2f}/{float(possible):.2f}]"
 
 
 def _build_arborist_tree_data(
     assets: List[Dict[str, Any]],
     *,
     id_key: str = "_id",
-    subtree_totals: Mapping[str, Optional[float]],
+    subtree_totals: Mapping[str, Tuple[float, float]],
 ) -> List[Dict[str, Any]]:
     tree: List[Dict[str, Any]] = []
     for idx, asset in enumerate(assets):
@@ -82,6 +137,8 @@ def _build_arborist_tree_data(
         node_id = safe_str(asset.get(id_key))
 
         base_label = f"{name} ({asset_type})"
+        if is_retired(asset):
+            base_label = _strike(base_label)
         suffix = _format_subtree_suffix(node_id, subtree_totals=subtree_totals)
         # Try to keep the numeric suffix visible by reserving space for it.
         max_chars = 55
@@ -139,7 +196,7 @@ def render_asset_hierarchy_sidebar(
         return "", selected_node_id != ""
 
     roots = as_list(portfolio.get("assets"))
-    subtree_totals = _compute_subtree_totals_tco2e(roots, id_key="_id")
+    subtree_totals = _compute_subtree_savings(roots, id_key="_id")
 
     tree_data = _build_arborist_tree_data(roots, id_key="_id", subtree_totals=subtree_totals)
     selected_id: Optional[str] = selected_node_id or None
@@ -182,7 +239,12 @@ def render_asset_hierarchy_sidebar(
         labels = {
             n.node_id: ("   " * n.depth)
             + _truncate_one_line(
-                f"{n.name} ({n.type})" + _format_subtree_suffix(n.node_id, subtree_totals=subtree_totals),
+                (
+                    _strike(f"{n.name} ({n.type})")
+                    if is_retired(n.data)
+                    else f"{n.name} ({n.type})"
+                )
+                + _format_subtree_suffix(n.node_id, subtree_totals=subtree_totals),
                 max_chars=55,
             )
             for n in nodes

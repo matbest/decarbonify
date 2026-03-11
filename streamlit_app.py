@@ -11,6 +11,7 @@ from decarbonify.portfolio_index import index_portfolio
 from decarbonify.portfolio_io import (
     as_list,
     ensure_asset_ids,
+    ensure_asset_data_fields,
     load_portfolio_from_bytes,
     load_portfolio_from_path,
     safe_str,
@@ -133,6 +134,11 @@ if (
     if restored_portfolio is not None:
         st.session_state.portfolio = _deepcopy_jsonable(restored_portfolio)
     else:
+        if _restore_msg and _restore_msg != "No saved Drive state found":
+            warn_key = "drive_restore_schema_warning_shown"
+            if not st.session_state.get(warn_key):
+                st.session_state[warn_key] = True
+                st.warning(_restore_msg)
         st.session_state.portfolio = _deepcopy_jsonable(loaded_portfolio)
     st.session_state.portfolio_source = source
     st.session_state.uploaded_name = uploaded.name if uploaded is not None else None
@@ -144,6 +150,8 @@ portfolio: Dict[str, Any] = st.session_state.portfolio
 
 # Ensure stable ids exist for all assets (idempotent).
 ensure_asset_ids(portfolio, id_key="_id")
+# Ensure data_fields schema exists for all assets (idempotent).
+ensure_asset_data_fields(portfolio)
 
 nodes, node_by_id = index_portfolio(portfolio)
 
@@ -191,17 +199,7 @@ with st.sidebar:
                 try:
                     move_preorder(portfolio, node_id=st.session_state.selected_node_id, direction=-1)
 
-                    ok, msg = save_portfolio_state(
-                        cfg=google_cfg,
-                        refresh_token=refresh_token,
-                        user_key=user_email,
-                        portfolio_key=st.session_state.get("portfolio_storage_key", storage_key),
-                        portfolio_name=safe_str(st.session_state.get("portfolio_storage_name", portfolio_name_loaded)),
-                        portfolio=portfolio,
-                        emissions_overrides={},
-                    )
-                    if not ok:
-                        st.warning("Reorder applied, but not saved to Drive: " + msg)
+                    st.caption("Reorder applied locally. Click 'Save to Drive' to persist.")
 
                     st.session_state.asset_tree_initialized = False
                     st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
@@ -214,17 +212,7 @@ with st.sidebar:
                 try:
                     move_preorder(portfolio, node_id=st.session_state.selected_node_id, direction=1)
 
-                    ok, msg = save_portfolio_state(
-                        cfg=google_cfg,
-                        refresh_token=refresh_token,
-                        user_key=user_email,
-                        portfolio_key=st.session_state.get("portfolio_storage_key", storage_key),
-                        portfolio_name=safe_str(st.session_state.get("portfolio_storage_name", portfolio_name_loaded)),
-                        portfolio=portfolio,
-                        emissions_overrides={},
-                    )
-                    if not ok:
-                        st.warning("Reorder applied, but not saved to Drive: " + msg)
+                    st.caption("Reorder applied locally. Click 'Save to Drive' to persist.")
 
                     st.session_state.asset_tree_initialized = False
                     st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
@@ -241,7 +229,6 @@ with st.sidebar:
             portfolio_key=st.session_state.get("portfolio_storage_key", storage_key),
             portfolio_name=safe_str(st.session_state.get("portfolio_storage_name", portfolio_name_loaded)),
             portfolio=portfolio,
-            emissions_overrides={},
         )
         if ok:
             st.success(msg)

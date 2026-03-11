@@ -38,16 +38,19 @@ def heuristic_recommendations(asset: Dict[str, Any]) -> List[Dict[str, Any]]:
     if fuel == "gas" or "boiler" in name.lower():
         recs.append(
             {
-                "title": "Replace gas boiler with heat pump",
+                "title": "Switch gas boiler to heat pump",
                 "estimated_saving_tco2_per_year": 2.4,
-                "explanation": "Switching from gas combustion to an efficient heat pump typically cuts operational emissions, especially with greener electricity.",
+                "description": "Switching from gas combustion to an efficient heat pump typically cuts operational emissions, especially with greener electricity.",
+                "action": "switch",
+                "add_asset": {"name": "Heat Pump", "type": "energy_system", "fuel": "electric"},
             }
         )
         recs.append(
             {
                 "title": "Improve building/pipework insulation",
                 "estimated_saving_tco2_per_year": 0.6,
-                "explanation": "Reducing heat loss lowers heat demand regardless of heating technology.",
+                "description": "Reducing heat loss lowers heat demand regardless of heating technology.",
+                "action": "other",
             }
         )
 
@@ -56,16 +59,19 @@ def heuristic_recommendations(asset: Dict[str, Any]) -> List[Dict[str, Any]]:
             {
                 "title": "Upgrade to LED + controls",
                 "estimated_saving_tco2_per_year": 0.3,
-                "explanation": "LEDs and occupancy/daylight controls reduce electricity consumption while maintaining lighting levels.",
+                "description": "LEDs and occupancy/daylight controls reduce electricity consumption while maintaining lighting levels.",
+                "action": "other",
             }
         )
 
     if asset_type in {"land", "natural_feature"}:
         recs.append(
             {
-                "title": "Increase biodiversity planting",
+                "title": "Add trees / biodiversity planting",
                 "estimated_saving_tco2_per_year": 0.5,
-                "explanation": "Tree and hedgerow planting, soil improvements, and reduced mowing can increase sequestration over time.",
+                "description": "Tree and hedgerow planting, soil improvements, and reduced mowing can increase sequestration over time.",
+                "action": "add",
+                "add_asset": {"name": "Trees / planting", "type": "natural_feature", "feature": "trees"},
             }
         )
 
@@ -74,7 +80,8 @@ def heuristic_recommendations(asset: Dict[str, Any]) -> List[Dict[str, Any]]:
             {
                 "title": "Add smart heating controls",
                 "estimated_saving_tco2_per_year": 0.4,
-                "explanation": "Better schedules, zoning, and setpoints often reduce wasted heating and improve comfort.",
+                "description": "Better schedules, zoning, and setpoints often reduce wasted heating and improve comfort.",
+                "action": "other",
             }
         )
 
@@ -83,7 +90,8 @@ def heuristic_recommendations(asset: Dict[str, Any]) -> List[Dict[str, Any]]:
             {
                 "title": "Verify inverter performance + monitoring",
                 "estimated_saving_tco2_per_year": 0.1,
-                "explanation": "Monitoring helps catch faults early and ensures the system delivers expected generation.",
+                "description": "Monitoring helps catch faults early and ensures the system delivers expected generation.",
+                "action": "other",
             }
         )
 
@@ -109,7 +117,11 @@ def llm_recommendations(portfolio: Dict[str, Any], asset: Dict[str, Any]) -> Lis
         "You are a decarbonisation advisor. Given a single asset within a property portfolio, "
         "suggest up to 5 practical emissions-reduction or sequestration improvements. "
         "Return ONLY valid JSON with this schema: {\"recommendations\": [ {\"title\": str, "
-        "\"estimated_saving_tco2_per_year\": number, \"explanation\": str} ] }. "
+        "\"description\": str, \"estimated_saving_tco2_per_year\": number, "
+        "\"action\": \"add\"|\"remove\"|\"switch\"|\"other\", \"add_asset\": object|null} ] }. "
+        "If action is 'add' or 'switch', include add_asset as a minimal asset JSON object like {\"name\": str, \"type\": str}. "
+        "If action is 'remove' it applies to the currently selected asset. "
+        "If action is 'switch' it means: add add_asset at the same level as the selected asset, and retire the selected asset. "
         "Keep estimated_saving_tco2_per_year plausible and non-negative.\n\n"
         f"Portfolio name: {portfolio_name}\n"
         f"Asset JSON: {asset_json}\n"
@@ -133,11 +145,19 @@ def llm_recommendations(portfolio: Dict[str, Any], asset: Dict[str, Any]) -> Lis
             for item in recs[:5]:
                 if not isinstance(item, dict):
                     continue
+                action = safe_str(item.get("action") or "other").lower()
+                if action not in {"add", "remove", "switch", "other"}:
+                    action = "other"
+                add_asset = item.get("add_asset")
+                if not isinstance(add_asset, dict):
+                    add_asset = None
                 cleaned.append(
                     {
                         "title": safe_str(item.get("title")),
                         "estimated_saving_tco2_per_year": float(item.get("estimated_saving_tco2_per_year", 0) or 0),
-                        "explanation": safe_str(item.get("explanation")),
+                        "description": safe_str(item.get("description") or item.get("explanation")),
+                        "action": action,
+                        "add_asset": add_asset,
                     }
                 )
             return cleaned

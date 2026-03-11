@@ -100,6 +100,13 @@ If `OPENAI_API_KEY` is not set, the app uses a lightweight heuristic fallback.
 
 A portfolio is stored as JSON with a name and a list of assets. Each asset can include nested `assets`.
 
+Assets can also include a `data_fields` object for dynamic per-asset attributes. Each field stores two values:
+
+- `derived.value`: produced by inference/lookups (e.g. LLM, heuristics)
+- `manual.value`: entered by a human and takes precedence
+
+The app expects (at minimum) an emissions field keyed as `emissions_tco2e_per_year`.
+
 Example:
 
 ```json
@@ -114,7 +121,20 @@ Example:
 					"name": "Heelands Meeting Centre",
 					"type": "building",
 					"assets": [
-						{"name": "Gas Boiler", "type": "energy_system", "fuel": "gas"}
+						{
+							"name": "Gas Boiler",
+							"type": "energy_system",
+							"fuel": "gas",
+							"data_fields": {
+								"emissions_tco2e_per_year": {
+									"label": "Emissions",
+									"kind": "number",
+									"unit": "tCO2e/year",
+									"derived": {"value": 1.25, "source": "llm"},
+									"manual": {"value": null}
+								}
+							}
+						}
 					]
 				}
 			]

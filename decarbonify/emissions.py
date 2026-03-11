@@ -4,9 +4,8 @@ from typing import Any, Dict, Iterable, Optional, Tuple
 
 from .portfolio_io import as_list, safe_str
 
-
-EMISSIONS_FIELD = "estimated_emissions_tco2e_per_year"
-USER_OVERRIDE_FIELD = "user_emissions_override_tco2e_per_year"
+DATA_FIELDS_KEY = "data_fields"
+EMISSIONS_KEY = "emissions_tco2e_per_year"
 
 
 def _as_float(value: Any) -> Optional[float]:
@@ -25,30 +24,60 @@ def _as_float(value: Any) -> Optional[float]:
     return None
 
 
-def extract_emissions_tco2e_per_year(asset: Dict[str, Any]) -> Optional[float]:
-    """Extract a single asset's annual emissions in tCO2e/year.
-
-    Uses a single, standard field to keep the schema unambiguous for later
-    LLM population.
-
-    Returns None when no supported value exists.
-    """
-
-    raw = _as_float(asset.get(EMISSIONS_FIELD))
-    if raw is None:
+def _get_field_entry(asset: Dict[str, Any], *, key: str) -> Optional[Dict[str, Any]]:
+    fields = asset.get(DATA_FIELDS_KEY)
+    if not isinstance(fields, dict):
         return None
-    return float(raw)
+    entry = fields.get(key)
+    return entry if isinstance(entry, dict) else None
+
+
+def is_retired(asset: Dict[str, Any]) -> bool:
+    lifecycle = asset.get("lifecycle")
+    if not isinstance(lifecycle, dict):
+        return False
+    return safe_str(lifecycle.get("status")).lower() == "retired"
+
+
+def get_derived_value(asset: Dict[str, Any], *, key: str) -> Any:
+    entry = _get_field_entry(asset, key=key)
+    if not entry:
+        return None
+    derived = entry.get("derived")
+    if not isinstance(derived, dict):
+        return None
+    return derived.get("value")
+
+
+def get_manual_value(asset: Dict[str, Any], *, key: str) -> Any:
+    entry = _get_field_entry(asset, key=key)
+    if not entry:
+        return None
+    manual = entry.get("manual")
+    if not isinstance(manual, dict):
+        return None
+    return manual.get("value")
+
+
+def extract_emissions_tco2e_per_year(asset: Dict[str, Any]) -> Optional[float]:
+    """Extract the derived annual emissions for a single asset in tCO2e/year."""
+
+    raw = _as_float(get_derived_value(asset, key=EMISSIONS_KEY))
+    return None if raw is None else float(raw)
 
 
 def effective_emissions_tco2e_per_year(asset: Dict[str, Any]) -> Optional[float]:
-    """Return the emissions value for this asset.
+    """Return the effective emissions value for this asset.
 
-    If a user override is present on the asset JSON, it takes precedence.
+    Manual value takes precedence over derived value.
     """
 
-    ov = _as_float(asset.get(USER_OVERRIDE_FIELD))
-    if ov is not None:
-        return float(ov)
+    if is_retired(asset):
+        return None
+
+    manual = _as_float(get_manual_value(asset, key=EMISSIONS_KEY))
+    if manual is not None:
+        return float(manual)
     return extract_emissions_tco2e_per_year(asset)
 
 
@@ -81,7 +110,7 @@ def sum_emissions_produced_tco2e_per_year(
 
     for a in iter_asset_and_descendants(asset):
         visited += 1
-        if _as_float(a.get(USER_OVERRIDE_FIELD)) is not None:
+        if _as_float(get_manual_value(a, key=EMISSIONS_KEY)) is not None:
             overrides_used += 1
 
         v = effective_emissions_tco2e_per_year(a)
@@ -95,7 +124,7 @@ def sum_emissions_produced_tco2e_per_year(
 
 def emissions_field_help_text() -> str:
     return (
-        "No per-asset emissions fields found. "
-        "Add this numeric field to assets (interpreted as tCO₂e/year): "
-        f"{safe_str(EMISSIONS_FIELD)}"
+        "No emissions values found yet. "
+        "Enter a manual value in 'Data' for: "
+        f"{safe_str(EMISSIONS_KEY)}"
     )

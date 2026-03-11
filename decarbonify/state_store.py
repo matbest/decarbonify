@@ -7,8 +7,6 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 import streamlit as st
 
 from .drive_store import download_json_file, find_or_create_folder, refresh_access_token, upload_json_file
-from .emissions import USER_OVERRIDE_FIELD
-from .portfolio_io import as_list
 from .portfolio_io import safe_str
 
 
@@ -70,8 +68,9 @@ def load_portfolio_state(
     user_key: str,
     portfolio_key: str,
     portfolio_name: str,
+
 ) -> Tuple[Optional[Dict[str, Any]], str]:
-    """Load a saved portfolio state (portfolio + overrides) from Google Drive.
+    """Load a saved portfolio state from Google Drive.
 
         Returns: (portfolio_dict_or_none, status_message)
             - status_message is empty on success, otherwise a short reason
@@ -90,35 +89,10 @@ def load_portfolio_state(
         if not doc:
             return None, "No saved Drive state found"
 
-        if isinstance(doc.get("portfolio"), dict):
-            portfolio = dict(doc.get("portfolio"))
-            legacy_overrides = doc.get("emissions_overrides")
-        else:
-            # Back-compat: treat file as raw portfolio.
-            portfolio = dict(doc)
-            legacy_overrides = {}
-
-        # Back-compat: migrate legacy overrides mapping into the portfolio JSON.
-        if isinstance(legacy_overrides, dict) and legacy_overrides:
-            overrides_clean: Dict[str, float] = {}
-            for k, v in legacy_overrides.items():
-                if not isinstance(k, str) or not k:
-                    continue
-                try:
-                    overrides_clean[k] = float(v)
-                except Exception:
-                    continue
-
-            def apply(assets: Any) -> None:
-                for a in as_list(assets):
-                    if not isinstance(a, dict):
-                        continue
-                    aid = safe_str(a.get("_id"))
-                    if aid and aid in overrides_clean:
-                        a[USER_OVERRIDE_FIELD] = overrides_clean[aid]
-                    apply(a.get("assets"))
-
-            apply(portfolio.get("assets"))
+        raw_portfolio = doc.get("portfolio")
+        if not isinstance(raw_portfolio, dict):
+            return None, "Saved Drive file has an unexpected schema (missing 'portfolio')"
+        portfolio = dict(raw_portfolio)
 
         # Optionally validate that the file belongs to this user.
         owner = safe_str(doc.get("user"))
@@ -138,9 +112,8 @@ def save_portfolio_state(
     portfolio_key: str,
     portfolio_name: str,
     portfolio: Dict[str, Any],
-    emissions_overrides: Mapping[str, Any],
 ) -> Tuple[bool, str]:
-    """Save portfolio state (portfolio + overrides) to Google Drive (visible file).
+    """Save portfolio state to Google Drive (visible file).
 
     Returns: (ok, message)
     """

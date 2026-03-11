@@ -5,6 +5,10 @@ import uuid
 from typing import Any, Dict, List
 
 
+DATA_FIELDS_KEY = "data_fields"
+EMISSIONS_KEY = "emissions_tco2e_per_year"
+
+
 def safe_str(value: Any) -> str:
     return "" if value is None else str(value)
 
@@ -64,6 +68,65 @@ def ensure_asset_ids(portfolio: Dict[str, Any], *, id_key: str = "_id") -> None:
                 asset[id_key] = asset_id
 
             seen.add(asset_id)
+            walk(asset.get("assets"))
+
+    walk(portfolio.get("assets"))
+
+
+def ensure_asset_data_fields(portfolio: Dict[str, Any]) -> None:
+    """Ensure every asset has a `data_fields` mapping with a minimum emissions field.
+
+    This mutates the portfolio in-place. It is idempotent.
+
+    Schema (per field key):
+        {
+          "label": str,
+          "kind": "number"|"string"|...,
+          "unit": str (optional),
+          "derived": {"value": Any, ...},
+          "manual": {"value": Any, ...}
+        }
+    """
+
+    def ensure_field(asset: Dict[str, Any], *, key: str, label: str, kind: str, unit: str) -> None:
+        fields = asset.get(DATA_FIELDS_KEY)
+        if not isinstance(fields, dict):
+            fields = {}
+            asset[DATA_FIELDS_KEY] = fields
+
+        entry = fields.get(key)
+        if not isinstance(entry, dict):
+            entry = {}
+            fields[key] = entry
+
+        entry.setdefault("label", label)
+        entry.setdefault("kind", kind)
+        if unit:
+            entry.setdefault("unit", unit)
+
+        derived = entry.get("derived")
+        if not isinstance(derived, dict):
+            derived = {}
+            entry["derived"] = derived
+        derived.setdefault("value", None)
+
+        manual = entry.get("manual")
+        if not isinstance(manual, dict):
+            manual = {}
+            entry["manual"] = manual
+        manual.setdefault("value", None)
+
+    def walk(assets: Any) -> None:
+        for asset in as_list(assets):
+            if not isinstance(asset, dict):
+                continue
+            ensure_field(
+                asset,
+                key=EMISSIONS_KEY,
+                label="Emissions",
+                kind="number",
+                unit="tCO2e/year",
+            )
             walk(asset.get("assets"))
 
     walk(portfolio.get("assets"))
