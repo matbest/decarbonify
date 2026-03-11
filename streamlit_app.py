@@ -123,21 +123,17 @@ if (
     or (source == "Upload JSON" and uploaded is not None and st.session_state.get("uploaded_name") != uploaded.name)
 ):
     # Prefer a previously-saved Drive state for this user/portfolio.
-    restored = load_portfolio_state(
+    restored_portfolio, _restore_msg = load_portfolio_state(
         cfg=google_cfg,
         refresh_token=refresh_token,
         user_key=user_email,
         portfolio_key=storage_key,
         portfolio_name=portfolio_name_loaded,
     )
-    if restored is not None:
-        restored_portfolio, restored_overrides = restored
+    if restored_portfolio is not None:
         st.session_state.portfolio = _deepcopy_jsonable(restored_portfolio)
-        st.session_state.emissions_overrides = dict(restored_overrides)
     else:
         st.session_state.portfolio = _deepcopy_jsonable(loaded_portfolio)
-        if "emissions_overrides" not in st.session_state:
-            st.session_state.emissions_overrides = {}
     st.session_state.portfolio_source = source
     st.session_state.uploaded_name = uploaded.name if uploaded is not None else None
     st.session_state.asset_tree_initialized = False
@@ -182,7 +178,6 @@ with st.sidebar:
         nodes=nodes,
         node_by_id=node_by_id,
         selected_node_id=str(st.session_state.selected_node_id),
-        emissions_overrides=st.session_state.get("emissions_overrides"),
         tree_key=tree_key,
     )
     st.session_state.selected_node_id = selected_node_id
@@ -196,41 +191,62 @@ with st.sidebar:
                 try:
                     move_preorder(portfolio, node_id=st.session_state.selected_node_id, direction=-1)
 
-                    save_portfolio_state(
+                    ok, msg = save_portfolio_state(
                         cfg=google_cfg,
                         refresh_token=refresh_token,
                         user_key=user_email,
                         portfolio_key=st.session_state.get("portfolio_storage_key", storage_key),
                         portfolio_name=safe_str(st.session_state.get("portfolio_storage_name", portfolio_name_loaded)),
                         portfolio=portfolio,
-                        emissions_overrides=st.session_state.get("emissions_overrides") or {},
+                        emissions_overrides={},
                     )
+                    if not ok:
+                        st.warning("Reorder applied, but not saved to Drive: " + msg)
 
                     st.session_state.asset_tree_initialized = False
                     st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
                     st.rerun()
                 except PortfolioReorderError as exc:
                     st.error(str(exc))
+
         with down_col:
             if st.button("Down", use_container_width=True, disabled=not can_down):
                 try:
                     move_preorder(portfolio, node_id=st.session_state.selected_node_id, direction=1)
 
-                    save_portfolio_state(
+                    ok, msg = save_portfolio_state(
                         cfg=google_cfg,
                         refresh_token=refresh_token,
                         user_key=user_email,
                         portfolio_key=st.session_state.get("portfolio_storage_key", storage_key),
                         portfolio_name=safe_str(st.session_state.get("portfolio_storage_name", portfolio_name_loaded)),
                         portfolio=portfolio,
-                        emissions_overrides=st.session_state.get("emissions_overrides") or {},
+                        emissions_overrides={},
                     )
+                    if not ok:
+                        st.warning("Reorder applied, but not saved to Drive: " + msg)
 
                     st.session_state.asset_tree_initialized = False
                     st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
                     st.rerun()
                 except PortfolioReorderError as exc:
                     st.error(str(exc))
+
+    # Explicit save control (in addition to auto-save on changes)
+    if st.button("Save to Drive", use_container_width=True):
+        ok, msg = save_portfolio_state(
+            cfg=google_cfg,
+            refresh_token=refresh_token,
+            user_key=user_email,
+            portfolio_key=st.session_state.get("portfolio_storage_key", storage_key),
+            portfolio_name=safe_str(st.session_state.get("portfolio_storage_name", portfolio_name_loaded)),
+            portfolio=portfolio,
+            emissions_overrides={},
+        )
+        if ok:
+            st.success(msg)
+        else:
+            st.warning("Not saved to Drive: " + msg)
 
 
 selected_node = node_by_id.get(st.session_state.selected_node_id)

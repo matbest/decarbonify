@@ -10,6 +10,7 @@ from . import auth
 from .state_store import save_portfolio_state
 from .emissions import (
     EMISSIONS_FIELD,
+    USER_OVERRIDE_FIELD,
     emissions_field_help_text,
     extract_emissions_tco2e_per_year,
     sum_emissions_produced_tco2e_per_year,
@@ -22,15 +23,11 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
 
     asset = selected_node.data
 
-    if "emissions_overrides" not in st.session_state or not isinstance(st.session_state.get("emissions_overrides"), dict):
-        st.session_state.emissions_overrides = {}
-    overrides = st.session_state.emissions_overrides
-
     # Per-asset override input (stored separately from portfolio JSON).
     with st.expander("Emissions override", expanded=False):
         asset_id = safe_str(asset.get("_id"))
         base = extract_emissions_tco2e_per_year(asset)
-        current_override = overrides.get(asset_id) if asset_id else None
+        current_override = asset.get(USER_OVERRIDE_FIELD)
         st.caption(
             f"Base field: {EMISSIONS_FIELD}="
             + (f"{float(base):.2f} tCO₂e/yr" if base is not None else "(missing)")
@@ -48,21 +45,24 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
                 if not asset_id:
                     st.error("This asset is missing an internal id; cannot store override.")
                 elif s == "":
-                    if asset_id in overrides:
-                        del overrides[asset_id]
+                    if USER_OVERRIDE_FIELD in asset:
+                        del asset[USER_OVERRIDE_FIELD]
                     user_key = safe_str(st.session_state.get("auth_user_email")) or "anonymous"
-                    save_portfolio_state(
+                    ok, msg = save_portfolio_state(
                         cfg=auth.google_config(),
                         refresh_token=auth.current_refresh_token(),
                         user_key=user_key,
                         portfolio_key=safe_str(st.session_state.get("portfolio_storage_key")),
                         portfolio_name=safe_str(st.session_state.get("portfolio_storage_name")),
                         portfolio=st.session_state.get("portfolio") or {},
-                        emissions_overrides=overrides,
+                        emissions_overrides={},
                     )
                     st.session_state.asset_tree_initialized = False
                     st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
-                    st.success("Override cleared.")
+                    if ok:
+                        st.success("Override cleared. " + msg)
+                    else:
+                        st.warning("Override cleared, but not saved to Drive: " + msg)
                     st.rerun()
                 else:
                     try:
@@ -70,23 +70,26 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
                     except Exception:
                         st.error("Please enter a number (e.g. 1.25) or leave blank to clear.")
                     else:
-                        overrides[asset_id] = v
+                        asset[USER_OVERRIDE_FIELD] = v
                         user_key = safe_str(st.session_state.get("auth_user_email")) or "anonymous"
-                        save_portfolio_state(
+                        ok, msg = save_portfolio_state(
                             cfg=auth.google_config(),
                             refresh_token=auth.current_refresh_token(),
                             user_key=user_key,
                             portfolio_key=safe_str(st.session_state.get("portfolio_storage_key")),
                             portfolio_name=safe_str(st.session_state.get("portfolio_storage_name")),
                             portfolio=st.session_state.get("portfolio") or {},
-                            emissions_overrides=overrides,
+                            emissions_overrides={},
                         )
                         st.session_state.asset_tree_initialized = False
                         st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
-                        st.success("Override saved.")
+                        if ok:
+                            st.success("Override saved. " + msg)
+                        else:
+                            st.warning("Override saved locally for this session, but not saved to Drive: " + msg)
                         st.rerun()
 
-    total_tco2e, contributing, visited, overrides_used = sum_emissions_produced_tco2e_per_year(asset, overrides=overrides)
+    total_tco2e, contributing, visited, overrides_used = sum_emissions_produced_tco2e_per_year(asset)
     if contributing > 0:
         st.metric(
             "Estimated CO₂e produced (t/year)",

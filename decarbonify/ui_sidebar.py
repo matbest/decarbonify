@@ -23,7 +23,6 @@ def _truncate_one_line(text: str, *, max_chars: int = 60) -> str:
 def _compute_subtree_totals_tco2e(
     assets: List[Dict[str, Any]],
     *,
-    overrides: Mapping[str, Any] | None = None,
     id_key: str = "_id",
 ) -> Dict[str, Optional[float]]:
     """Return mapping of asset_id -> subtree total tCO2e/year.
@@ -38,7 +37,7 @@ def _compute_subtree_totals_tco2e(
         total = 0.0
         contributing = 0
 
-        v = effective_emissions_tco2e_per_year(asset, overrides=overrides, id_key=id_key)
+        v = effective_emissions_tco2e_per_year(asset)
         if v is not None:
             contributing += 1
             total += max(0.0, float(v))
@@ -127,7 +126,6 @@ def render_asset_hierarchy_sidebar(
     nodes: List[AssetNode],
     node_by_id: Dict[str, AssetNode],
     selected_node_id: str,
-    emissions_overrides: Mapping[str, Any] | None = None,
     tree_key: str = "asset_tree",
 ) -> Tuple[str, bool]:
     """Render the hierarchy selector.
@@ -141,7 +139,7 @@ def render_asset_hierarchy_sidebar(
         return "", selected_node_id != ""
 
     roots = as_list(portfolio.get("assets"))
-    subtree_totals = _compute_subtree_totals_tco2e(roots, overrides=emissions_overrides, id_key="_id")
+    subtree_totals = _compute_subtree_totals_tco2e(roots, id_key="_id")
 
     tree_data = _build_arborist_tree_data(roots, id_key="_id", subtree_totals=subtree_totals)
     selected_id: Optional[str] = selected_node_id or None

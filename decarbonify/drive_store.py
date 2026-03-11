@@ -86,6 +86,30 @@ def _http_bytes(
         raise RuntimeError(f"HTTP {exc.code}: {body or exc.reason}") from None
 
 
+def _http_no_content(
+    url: str,
+    *,
+    method: str,
+    access_token: str,
+) -> None:
+    req = urllib.request.Request(
+        url,
+        data=None,
+        method=method,
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=25):
+            return
+    except urllib.error.HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read().decode("utf-8")
+        except Exception:
+            body = ""
+        raise RuntimeError(f"HTTP {exc.code}: {body or exc.reason}") from None
+
+
 def refresh_access_token(*, cfg: Dict[str, Any], refresh_token: str) -> Tuple[str, int]:
     client_id = _safe_str(cfg.get("client_id"))
     client_secret = _safe_str(cfg.get("client_secret"))
@@ -121,13 +145,13 @@ def refresh_access_token(*, cfg: Dict[str, Any], refresh_token: str) -> Tuple[st
 def find_or_create_folder(*, access_token: str, folder_name: str) -> str:
     folder_name = (folder_name or "Decarbonify").strip() or "Decarbonify"
 
-    def _list(q: str) -> list[dict]:
+    def _list(q: str, *, order_by: str = "createdTime") -> list[dict]:
         params = urllib.parse.urlencode(
             {
                 "q": q,
                 "spaces": "drive",
                 "fields": "files(id,name,createdTime,appProperties)",
-                "orderBy": "createdTime",
+                "orderBy": order_by,
                 "pageSize": 10,
             }
         )
@@ -160,7 +184,8 @@ def find_or_create_folder(*, access_token: str, folder_name: str) -> str:
             "trashed = false",
         ]
     )
-    named = _list(q_named)
+    # If duplicates exist (e.g. from earlier versions), prefer the newest folder.
+    named = _list(q_named, order_by="createdTime desc")
     if named:
         fid = named[0].get("id")
         if isinstance(fid, str) and fid:
@@ -197,7 +222,7 @@ def find_or_create_folder(*, access_token: str, folder_name: str) -> str:
     return fid
 
 
-def _find_file_id(*, access_token: str, folder_id: str, file_name: str) -> str:
+def _list_files_by_name(*, access_token: str, folder_id: str, file_name: str) -> list[dict]:
     q = " and ".join(
         [
             f"name = '{file_name.replace("'", "\\'")}'",
@@ -205,14 +230,33 @@ def _find_file_id(*, access_token: str, folder_id: str, file_name: str) -> str:
             "trashed = false",
         ]
     )
-    params = urllib.parse.urlencode({"q": q, "fields": "files(id,name)", "pageSize": 10})
+    params = urllib.parse.urlencode(
+        {
+            "q": q,
+            "spaces": "drive",
+            "fields": "files(id,name,modifiedTime,createdTime)",
+            "orderBy": "modifiedTime desc",
+            "pageSize": 50,
+        }
+    )
     resp = _http_json(f"{DRIVE_FILES_URL}?{params}", method="GET", access_token=access_token)
     files = resp.get("files")
-    if isinstance(files, list) and files:
+    return files if isinstance(files, list) else []
+
+
+def _find_file_id(*, access_token: str, folder_id: str, file_name: str) -> str:
+    files = _list_files_by_name(access_token=access_token, folder_id=folder_id, file_name=file_name)
+    if files:
         fid = files[0].get("id")
         if isinstance(fid, str) and fid:
             return fid
     return ""
+
+
+def _delete_file(*, access_token: str, file_id: str) -> None:
+    if not file_id:
+        return
+    _http_no_content(f"{DRIVE_FILES_URL}/{urllib.parse.quote(file_id)}", method="DELETE", access_token=access_token)
 
 
 def download_json_file(*, access_token: str, folder_id: str, file_name: str) -> Optional[Dict[str, Any]]:
@@ -231,11 +275,19 @@ def download_json_file(*, access_token: str, folder_id: str, file_name: str) -> 
     return parsed if isinstance(parsed, dict) else None
 
 
-def upload_json_file(*, access_token: str, folder_id: str, file_name: str, obj: Dict[str, Any]) -> None:
-    file_id = _find_file_id(access_token=access_token, folder_id=folder_id, file_name=file_name)
+def upload_json_file(*, access_token: str, folder_id: str, file_name: str, obj: Dict[str, Any]) -> Dict[str, Any]:
+    matches = _list_files_by_name(access_token=access_token, folder_id=folder_id, file_name=file_name)
+    file_id = ""
+    if matches:
+        fid = matches[0].get("id")
+        if isinstance(fid, str) and fid:
+            file_id = fid
 
     boundary = "----decarbonifyBoundary"
     meta = {"name": file_name, "parents": [folder_id]}
+    if file_id:
+        # For updates, don't send parents (Drive requires addParents/removeParents for parent changes).
+        meta = {"name": file_name}
     body = (
         f"--{boundary}\r\n"
         "Content-Type: application/json; charset=UTF-8\r\n\r\n"
@@ -250,10 +302,29 @@ def upload_json_file(*, access_token: str, folder_id: str, file_name: str, obj: 
 
     headers = {"Content-Type": f"multipart/related; boundary={boundary}"}
 
-    if file_id:
-        url = f"{DRIVE_UPLOAD_URL}/{urllib.parse.quote(file_id)}?uploadType=multipart"
-        _http_json(url, method="PATCH", access_token=access_token, data=body, headers=headers)
-        return
+    fields = urllib.parse.urlencode({"fields": "id,modifiedTime,webViewLink,name"})
 
-    url = f"{DRIVE_UPLOAD_URL}?uploadType=multipart"
-    _http_json(url, method="POST", access_token=access_token, data=body, headers=headers)
+    if file_id:
+        url = f"{DRIVE_UPLOAD_URL}/{urllib.parse.quote(file_id)}?uploadType=multipart&{fields}"
+        meta = _http_json(url, method="PATCH", access_token=access_token, data=body, headers=headers)
+        # Best-effort: delete duplicates (older same-name files) so future saves update one canonical file.
+        for extra in matches[1:]:
+            extra_id = extra.get("id")
+            if isinstance(extra_id, str) and extra_id and extra_id != file_id:
+                try:
+                    _delete_file(access_token=access_token, file_id=extra_id)
+                except Exception:
+                    pass
+        return meta
+
+    url = f"{DRIVE_UPLOAD_URL}?uploadType=multipart&{fields}"
+    meta = _http_json(url, method="POST", access_token=access_token, data=body, headers=headers)
+    # Best-effort: if there were same-name files, clean them up.
+    for extra in matches[1:]:
+        extra_id = extra.get("id")
+        if isinstance(extra_id, str) and extra_id:
+            try:
+                _delete_file(access_token=access_token, file_id=extra_id)
+            except Exception:
+                pass
+    return meta

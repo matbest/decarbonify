@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 from .portfolio_io import as_list, safe_str
 
 
 EMISSIONS_FIELD = "estimated_emissions_tco2e_per_year"
+USER_OVERRIDE_FIELD = "user_emissions_override_tco2e_per_year"
 
 
 def _as_float(value: Any) -> Optional[float]:
@@ -39,21 +40,15 @@ def extract_emissions_tco2e_per_year(asset: Dict[str, Any]) -> Optional[float]:
     return float(raw)
 
 
-def effective_emissions_tco2e_per_year(
-    asset: Dict[str, Any],
-    *,
-    overrides: Mapping[str, Any] | None = None,
-    id_key: str = "_id",
-) -> Optional[float]:
-    """Return the emissions value for this asset, applying overrides when present."""
+def effective_emissions_tco2e_per_year(asset: Dict[str, Any]) -> Optional[float]:
+    """Return the emissions value for this asset.
 
-    if overrides is not None:
-        asset_id = safe_str(asset.get(id_key))
-        if asset_id:
-            raw_override = overrides.get(asset_id)
-            ov = _as_float(raw_override)
-            if ov is not None:
-                return float(ov)
+    If a user override is present on the asset JSON, it takes precedence.
+    """
+
+    ov = _as_float(asset.get(USER_OVERRIDE_FIELD))
+    if ov is not None:
+        return float(ov)
     return extract_emissions_tco2e_per_year(asset)
 
 
@@ -71,9 +66,6 @@ def iter_asset_and_descendants(asset: Dict[str, Any]) -> Iterable[Dict[str, Any]
 
 def sum_emissions_produced_tco2e_per_year(
     asset: Dict[str, Any],
-    *,
-    overrides: Mapping[str, Any] | None = None,
-    id_key: str = "_id",
 ) -> Tuple[float, int, int, int]:
     """Sum *produced* emissions across an asset + all descendants.
 
@@ -89,12 +81,10 @@ def sum_emissions_produced_tco2e_per_year(
 
     for a in iter_asset_and_descendants(asset):
         visited += 1
-        if overrides is not None:
-            asset_id = safe_str(a.get(id_key))
-            if asset_id and asset_id in overrides and _as_float(overrides.get(asset_id)) is not None:
-                overrides_used += 1
+        if _as_float(a.get(USER_OVERRIDE_FIELD)) is not None:
+            overrides_used += 1
 
-        v = effective_emissions_tco2e_per_year(a, overrides=overrides, id_key=id_key)
+        v = effective_emissions_tco2e_per_year(a)
         if v is None:
             continue
         contributing += 1
