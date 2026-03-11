@@ -201,6 +201,10 @@ cython_debug/
 
 # Streamlit local config
 .streamlit/
+
+# OAuth client secrets (do not commit)
+client_secret*.json
+*apps.googleusercontent.com.json
 .cursorignore
 .cursorindexingignore
 

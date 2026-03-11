@@ -1,0 +1,128 @@
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional, Tuple
+
+import streamlit as st
+
+from .portfolio_index import AssetNode
+from .portfolio_io import as_list, safe_str
+
+
+def _truncate_one_line(text: str, *, max_chars: int = 60) -> str:
+    text = safe_str(text).replace("\n", " ").replace("\r", " ").strip()
+    if max_chars <= 0:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    if max_chars == 1:
+        return "…"
+    return text[: max_chars - 1].rstrip() + "…"
+
+
+def _build_arborist_tree_data(assets: List[Dict[str, Any]], id_prefix: str) -> List[Dict[str, Any]]:
+    tree: List[Dict[str, Any]] = []
+    for idx, asset in enumerate(assets):
+        if not isinstance(asset, dict):
+            continue
+        name = safe_str(asset.get("name", f"Unnamed {idx}"))
+        asset_type = safe_str(asset.get("type", "asset"))
+        node_id = f"{id_prefix}.{idx}"
+
+        full_label = f"{name} ({asset_type})"
+        display_name = _truncate_one_line(full_label, max_chars=55).replace(" ", "\u00A0")
+
+        node: Dict[str, Any] = {
+            "id": node_id,
+            "name": display_name,
+            "title": full_label,
+        }
+        children = as_list(asset.get("assets"))
+        if children:
+            node["children"] = _build_arborist_tree_data(children, node_id)
+        tree.append(node)
+    return tree
+
+
+def inject_sidebar_nowrap_css() -> None:
+    st.markdown(
+        """
+<style>
+/* Keep the sidebar hierarchy (radio fallback) on a single line */
+section[data-testid="stSidebar"] .stRadio [role="radiogroup"] label,
+section[data-testid="stSidebar"] .stRadio [role="radiogroup"] label p,
+section[data-testid="stSidebar"] .stRadio [role="radiogroup"] label div {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+</style>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+def render_asset_hierarchy_sidebar(
+    *,
+    portfolio: Dict[str, Any],
+    nodes: List[AssetNode],
+    node_by_id: Dict[str, AssetNode],
+    selected_node_id: str,
+) -> Tuple[str, bool]:
+    """Render the hierarchy selector.
+
+    Returns: (selected_node_id, selection_changed)
+    """
+
+    st.subheader("Asset Hierarchy")
+    if not nodes:
+        st.info("No assets found in this portfolio.")
+        return "", selected_node_id != ""
+
+    tree_data = _build_arborist_tree_data(as_list(portfolio.get("assets")), "a")
+    selected_id: Optional[str] = selected_node_id or None
+    selection_changed = False
+
+    try:
+        from streamlit_arborist import tree_view  # type: ignore
+
+        if "asset_tree_initialized" not in st.session_state:
+            st.session_state.asset_tree_initialized = False
+
+        selection_arg = selected_id if not st.session_state.asset_tree_initialized else None
+
+        selected_node_data = tree_view(
+            tree_data,
+            selection=selection_arg,
+            select_internal_nodes=True,
+            open_by_default=True,
+            height=600,
+            key="asset_tree",
+        )
+        st.session_state.asset_tree_initialized = True
+
+        candidate = selected_node_data
+        if candidate is None:
+            candidate = st.session_state.get("asset_tree")
+        if isinstance(candidate, dict) and candidate.get("id") in node_by_id:
+            new_id = str(candidate["id"])
+            if new_id != selected_node_id:
+                selection_changed = True
+            selected_node_id = new_id
+
+        return selected_node_id, selection_changed
+
+    except Exception:
+        options = [n.node_id for n in nodes]
+        labels = {
+            n.node_id: ("   " * n.depth) + _truncate_one_line(f"{n.name} ({n.type})", max_chars=55)
+            for n in nodes
+        }
+        selected = st.radio(
+            "",
+            options=options,
+            format_func=lambda node_id: labels.get(node_id, node_id),
+            index=options.index(selected_node_id) if selected_node_id in options else 0,
+            label_visibility="collapsed",
+        )
+        selection_changed = selected != selected_node_id
+        return selected, selection_changed
