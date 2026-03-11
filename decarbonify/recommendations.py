@@ -5,6 +5,7 @@ import json
 import os
 from typing import Any, Dict, List, Mapping
 
+from .emissions import effective_emissions_tco2e_per_year
 from .portfolio_io import safe_str
 
 
@@ -130,6 +131,8 @@ def llm_recommendations(portfolio: Dict[str, Any], asset: Dict[str, Any]) -> Lis
 
     portfolio_name = safe_str(portfolio.get("portfolio_name"))
     asset_json = json.dumps(asset, ensure_ascii=False)
+    eff_emissions = effective_emissions_tco2e_per_year(asset)
+    eff_text = "null" if eff_emissions is None else f"{float(eff_emissions):.4f}"
 
     prompt = (
         "You are a decarbonisation advisor. Given a single asset within a property portfolio, "
@@ -140,8 +143,10 @@ def llm_recommendations(portfolio: Dict[str, Any], asset: Dict[str, Any]) -> Lis
         "If action is 'add' or 'switch', include add_asset as a minimal asset JSON object like {\"name\": str, \"type\": str}. "
         "If action is 'remove' it applies to the currently selected asset. "
         "If action is 'switch' it means: add add_asset at the same level as the selected asset, and retire the selected asset. "
-        "Keep estimated_saving_tco2_per_year plausible and non-negative.\n\n"
+        "Use the asset's effective annual emissions (tCO2e/year) as the baseline for savings when available. "
+        "Savings must be non-negative and should not exceed the baseline magnitude.\n\n"
         f"Portfolio name: {portfolio_name}\n"
+        f"Asset effective emissions tCO2e/year (positive emits, negative sequesters, null unknown): {eff_text}\n"
         f"Asset JSON: {asset_json}\n"
     )
 
@@ -169,10 +174,25 @@ def llm_recommendations(portfolio: Dict[str, Any], asset: Dict[str, Any]) -> Lis
                 add_asset = item.get("add_asset")
                 if not isinstance(add_asset, dict):
                     add_asset = None
+                try:
+                    saving = float(item.get("estimated_saving_tco2_per_year", 0) or 0)
+                except Exception:
+                    saving = 0.0
+                if saving < 0:
+                    saving = 0.0
+                # Clamp to baseline magnitude when known to keep savings realistic.
+                if eff_emissions is not None:
+                    try:
+                        max_saving = abs(float(eff_emissions))
+                        if saving > max_saving:
+                            saving = max_saving
+                    except Exception:
+                        pass
+
                 cleaned.append(
                     {
                         "title": safe_str(item.get("title")),
-                        "estimated_saving_tco2_per_year": float(item.get("estimated_saving_tco2_per_year", 0) or 0),
+                        "estimated_saving_tco2_per_year": float(saving),
                         "description": safe_str(item.get("description") or item.get("explanation")),
                         "action": action,
                         "add_asset": add_asset,
