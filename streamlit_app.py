@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from typing import Any, Dict, Optional
 
 import streamlit as st
@@ -25,6 +26,54 @@ from decarbonify.ui_sidebar import inject_sidebar_nowrap_css, render_asset_hiera
 
 
 DEFAULT_PORTFOLIO_PATH = "portfolio.json"
+
+
+def _configure_openai_env_from_streamlit_secrets() -> None:
+    """Populate OpenAI env vars from Streamlit secrets (local or Streamlit Cloud).
+
+    The OpenAI Python client reads OPENAI_API_KEY from the environment by default.
+    """
+
+    if os.environ.get("OPENAI_API_KEY"):
+        return
+
+    try:
+        key = None
+        if "OPENAI_API_KEY" in st.secrets:
+            key = str(st.secrets.get("OPENAI_API_KEY") or "").strip()
+        else:
+            openai_section = st.secrets.get("openai")
+            if openai_section is not None and hasattr(openai_section, "get"):
+                key = str(openai_section.get("api_key") or "").strip()
+
+        # Fallback: some users paste these into the [google] section.
+        if not key:
+            google_section = st.secrets.get("google")
+            if google_section is not None and hasattr(google_section, "get"):
+                key = str(google_section.get("OPENAI_API_KEY") or "").strip()
+
+        if key:
+            os.environ["OPENAI_API_KEY"] = key
+
+        if not os.environ.get("OPENAI_MODEL"):
+            model = None
+            if "OPENAI_MODEL" in st.secrets:
+                model = str(st.secrets.get("OPENAI_MODEL") or "").strip()
+            else:
+                openai_section = st.secrets.get("openai")
+                if openai_section is not None and hasattr(openai_section, "get"):
+                    model = str(openai_section.get("model") or "").strip()
+
+            if not model:
+                google_section = st.secrets.get("google")
+                if google_section is not None and hasattr(google_section, "get"):
+                    model = str(google_section.get("OPENAI_MODEL") or "").strip()
+
+            if model:
+                os.environ["OPENAI_MODEL"] = model
+    except Exception:
+        # Secrets might not be configured; env vars may be used instead.
+        return
 
 
 def _portfolio_storage_key(*, source: str, uploaded_name: Optional[str]) -> str:
@@ -75,8 +124,17 @@ def _load_default_portfolio() -> Dict[str, Any]:
 
 st.set_page_config(layout="wide", initial_sidebar_state="expanded")
 inject_sidebar_nowrap_css()
+_configure_openai_env_from_streamlit_secrets()
 
-st.title("Portfolio Carbon Insight Tool")
+# Reduce the default top/bottom padding so more content fits above the fold.
+st.markdown(
+    """
+<style>
+div.block-container { padding-top: 0.75rem; padding-bottom: 1rem; }
+</style>
+""",
+    unsafe_allow_html=True,
+)
 
 # Login gate
 user_email = auth.require_login(app_name="Decarbonify")
@@ -85,14 +143,14 @@ st.session_state.auth_user_email = user_email
 google_cfg = auth.google_config()
 refresh_token = auth.current_refresh_token()
 
-header_left, header_right = st.columns([0.78, 0.22], gap="small")
-
-with header_right:
-    with st.expander("...", expanded=False):
+# Load controls live in the sidebar to reduce top-of-page whitespace.
+with st.sidebar:
+    with st.expander("Load portfolio", expanded=False):
         source = st.radio(
-            "Load portfolio",
+            "Source",
             ["Use default portfolio.json", "Upload JSON"],
             horizontal=False,
+            label_visibility="collapsed",
         )
 
         uploaded = None
@@ -167,16 +225,17 @@ elif st.session_state.selected_node_id and st.session_state.selected_node_id not
     st.session_state.selected_node_id = nodes[0].node_id if nodes else ""
 
 
-with header_left:
+with st.sidebar:
+    st.markdown("## Portfolio Carbon Insight Tool")
+
     portfolio_name = safe_str(portfolio.get("portfolio_name"))
-    st.subheader(portfolio_name)
+    if portfolio_name:
+        st.markdown(f"### {portfolio_name}")
     if openai_client_available():
         st.caption("AI: enabled")
     else:
         st.caption("AI: disabled (set OPENAI_API_KEY to enable)")
 
-
-with st.sidebar:
     auth.render_logout_sidebar()
 
     tree_key = f"asset_tree_{int(st.session_state.get('asset_tree_nonce', 0))}"
@@ -237,12 +296,44 @@ with st.sidebar:
 
 
 selected_node = node_by_id.get(st.session_state.selected_node_id)
-if not selected_node:
-    st.subheader("Asset Detail + Recommendations")
-    st.info("Select an asset to view details.")
-else:
-    render_asset_detail_and_recommendations(portfolio=portfolio, selected_node=selected_node)
 
-st.divider()
+main_left, main_right = st.columns([0.72, 0.28], gap="large")
 
-render_chat(portfolio=portfolio, nodes=nodes)
+with main_left:
+    if not selected_node:
+        st.subheader("Asset Detail")
+        st.info("Select an asset to view details.")
+
+        with st.expander("Add root asset", expanded=False):
+            root_name = st.text_input("Name", key="add_root_name")
+            root_type = st.text_input("Type", value="asset", key="add_root_type")
+            root_desc = st.text_input("Description (optional)", key="add_root_desc")
+            if st.button("Add root", type="primary", disabled=not (root_name or "").strip()):
+                roots = portfolio.get("assets")
+                if not isinstance(roots, list):
+                    roots = []
+                    portfolio["assets"] = roots
+
+                new_id = str(uuid.uuid4())
+                new_asset: Dict[str, Any] = {
+                    "_id": new_id,
+                    "name": (root_name or "").strip(),
+                    "type": (root_type or "asset").strip() or "asset",
+                }
+                if (root_desc or "").strip():
+                    new_asset["description"] = root_desc.strip()
+                roots.append(new_asset)
+                ensure_asset_ids(portfolio, id_key="_id")
+                ensure_asset_data_fields(portfolio)
+
+                st.session_state.selected_node_id = new_id
+                st.session_state.asset_tree_initialized = False
+                st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
+                for k in ("add_root_name", "add_root_type", "add_root_desc"):
+                    st.session_state.pop(k, None)
+                st.rerun()
+    else:
+        render_asset_detail_and_recommendations(portfolio=portfolio, selected_node=selected_node)
+
+with main_right:
+    render_chat(portfolio=portfolio, nodes=nodes, selected_node=selected_node)

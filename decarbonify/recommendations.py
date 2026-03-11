@@ -1,10 +1,28 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping
 
 from .portfolio_io import safe_str
+
+
+def recommendation_id(rec: Mapping[str, Any]) -> str:
+    """Deterministic id for a recommendation payload.
+
+    Used to key per-asset recommendation status like done/ignored.
+    """
+
+    payload = {
+        "title": safe_str(rec.get("title")),
+        "description": safe_str(rec.get("description")),
+        "saving": float(rec.get("estimated_saving_tco2_per_year", 0) or 0),
+        "action": safe_str(rec.get("action")),
+        "add_asset": rec.get("add_asset"),
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
 
 
 def openai_client_available() -> bool:

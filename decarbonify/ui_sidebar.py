@@ -7,6 +7,7 @@ import streamlit as st
 from .emissions import is_retired
 from .portfolio_index import AssetNode
 from .portfolio_io import as_list, safe_str
+from .recommendations import heuristic_recommendations, recommendation_id
 
 
 def _truncate_one_line(text: str, *, max_chars: int = 60) -> str:
@@ -49,39 +50,25 @@ def _asset_savings_tco2_per_year(asset: Dict[str, Any]) -> Tuple[float, float]:
     done = 0.0
     possible = 0.0
 
-    asset_id = safe_str(asset.get("_id"))
-    cache_map: Dict[str, float] = {}
-    cache_by_asset = st.session_state.get("recommendations_cache_by_asset_id")
-    cache = None
-    if isinstance(cache_by_asset, dict) and asset_id:
-        cache = cache_by_asset.get(asset_id)
-
-    if isinstance(cache, list):
-        for row in cache:
-            if not isinstance(row, dict):
-                continue
-            rid = safe_str(row.get("id"))
-            if not rid:
-                continue
-            try:
-                v = float(row.get("saving_tco2_per_year", 0) or 0)
-            except Exception:
-                v = 0.0
-            cache_map[rid] = v
-            possible += v
-
     status = asset.get("recommendation_status")
-    if isinstance(status, dict):
-        for rid, st0 in status.items():
-            if not isinstance(st0, dict):
-                continue
-            if not bool(st0.get("done")):
-                continue
-            try:
-                v = float(st0.get("saving_tco2_per_year", cache_map.get(str(rid), 0)) or 0)
-            except Exception:
-                v = float(cache_map.get(str(rid), 0))
-            done += v
+    status_map = status if isinstance(status, dict) else {}
+
+    recs = heuristic_recommendations(asset)
+    for r in recs:
+        rid = recommendation_id(r)
+        st0 = status_map.get(rid)
+        ignored = bool(st0.get("ignored")) if isinstance(st0, dict) else False
+        if ignored:
+            continue
+
+        try:
+            saving = float(r.get("estimated_saving_tco2_per_year", 0) or 0)
+        except Exception:
+            saving = 0.0
+        possible += saving
+
+        if isinstance(st0, dict) and bool(st0.get("done")):
+            done += saving
 
     return float(done), float(possible)
 
