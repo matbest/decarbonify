@@ -395,16 +395,34 @@ def _build_google_auth_url(*, state: str, prompt: str) -> str:
     if not client_id or not redirect_uri:
         raise RuntimeError("Missing google.client_id or google.redirect_uri in Streamlit Secrets")
 
+    # Request Drive access only when explicitly enabled.
+    drive_enabled_raw = cfg.get("drive_enabled")
+    drive_enabled = False
+    if isinstance(drive_enabled_raw, bool):
+        drive_enabled = drive_enabled_raw
+    elif isinstance(drive_enabled_raw, (int, float)):
+        drive_enabled = bool(drive_enabled_raw)
+    elif isinstance(drive_enabled_raw, str):
+        drive_enabled = drive_enabled_raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    scopes = ["openid", "email", "profile"]
+    if drive_enabled:
+        scopes.append(_DRIVE_SCOPE)
+
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": f"openid email profile {_DRIVE_SCOPE}",
+        "scope": " ".join(scopes),
         "state": state,
         "prompt": prompt,
-        "access_type": "offline",
         "include_granted_scopes": "true",
     }
+
+    # Offline access (refresh token) is only needed for Drive persistence.
+    if drive_enabled:
+        params["access_type"] = "offline"
+
     return f"{GOOGLE_AUTH_URL}?{urllib.parse.urlencode(params)}"
 
 
@@ -559,7 +577,16 @@ def require_login(*, app_name: str = "Decarbonify") -> str:
     state_token = _create_oauth_state(cfg=cfg)
     try:
         # Ask for consent only if we don't have a refresh token yet.
-        prompt = "consent" if not current_refresh_token() else "select_account"
+        drive_enabled_raw = cfg.get("drive_enabled")
+        drive_enabled = False
+        if isinstance(drive_enabled_raw, bool):
+            drive_enabled = drive_enabled_raw
+        elif isinstance(drive_enabled_raw, (int, float)):
+            drive_enabled = bool(drive_enabled_raw)
+        elif isinstance(drive_enabled_raw, str):
+            drive_enabled = drive_enabled_raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+        prompt = "consent" if (drive_enabled and not current_refresh_token()) else "select_account"
         auth_url = _build_google_auth_url(state=state_token, prompt=prompt)
     except Exception as exc:
         st.error(str(exc))
