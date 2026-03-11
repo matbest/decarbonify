@@ -1,0 +1,82 @@
+{
+  "portfolio_name": "Bradwell Parish",
+  "assets": [
+    {
+      "name": "Heelands Site",
+      "type": "land",
+      "assets": [
+        {
+          "name": "Heelands Meeting Centre",
+          "type": "building",
+          "size_m2": 450,
+          "usage": "community meetings and events",
+          "assets": [
+            {
+              "name": "Kitchen",
+              "type": "room",
+              "assets": [
+                {
+                  "name": "Fridge/Freezer",
+                  "type": "equipment",
+                  "energy_source": "electricity"
+                }
+              ]
+            },
+            {
+              "name": "Main Hall",
+              "type": "room"
+            },
+            {
+              "name": "Gas Boiler",
+              "type": "energy_system",
+              "fuel": "gas",
+              "usage": "space heating and hot water"
+            },
+            {
+              "name": "Lighting",
+              "type": "lighting",
+              "energy_source": "electricity"
+            }
+          ]
+        },
+        {
+          "name": "Solar Panels",
+          "type": "energy_generation",
+          "technology": "solar_pv"
+        },
+        {
+          "name": "Tree Line",
+          "type": "natural_feature",
+          "feature": "trees"
+        }
+      ]
+    },
+    {
+      "name": "Football Field",
+      "type": "land",
+      "assets": [
+        {
+          "name": "Floodlights",
+          "type": "lighting",
+          "energy_source": "electricity"
+        },
+        {
+          "name": "Pitch Grassland",
+          "type": "natural_feature",
+          "feature": "grassland"
+        }
+      ]
+    },
+    {
+      "name": "Allotments",
+      "type": "land",
+      "assets": [
+        {
+          "name": "Allotment Plots",
+          "type": "natural_feature",
+          "feature": "soil"
+        }
+      ]
+    }
+  ]
+}

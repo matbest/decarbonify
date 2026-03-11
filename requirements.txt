@@ -1,1 +1,3 @@
 streamlit
+openai>=1.0.0
+streamlit-arborist>=0.3.0
