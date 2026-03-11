@@ -18,6 +18,7 @@ import streamlit as st
 
 
 _GOOGLE_USER_KEY = "google_user"
+_OAUTH_REDIRECTING_KEY = "oauth_redirecting"
 
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -300,12 +301,16 @@ def require_login(*, app_name: str = "Decarbonify") -> str:
     oauth_error = (qp.get("error") or [""])[0]
 
     if oauth_error:
+        if _OAUTH_REDIRECTING_KEY in st.session_state:
+            del st.session_state[_OAUTH_REDIRECTING_KEY]
         st.error(f"Google sign-in failed: {oauth_error}")
         _clear_query_params()
         st.stop()
 
     # Callback handling
     if code:
+        if _OAUTH_REDIRECTING_KEY in st.session_state:
+            del st.session_state[_OAUTH_REDIRECTING_KEY]
         if not _verify_oauth_state(state or "", cfg=cfg):
             st.error("Invalid OAuth state. Please try signing in again.")
             _clear_query_params()
@@ -333,6 +338,8 @@ def require_login(*, app_name: str = "Decarbonify") -> str:
             _clear_query_params()
             st.rerun()
         except Exception as exc:
+            if _OAUTH_REDIRECTING_KEY in st.session_state:
+                del st.session_state[_OAUTH_REDIRECTING_KEY]
             st.error(f"Google sign-in failed: {exc}")
             _clear_query_params()
             st.stop()
@@ -348,7 +355,18 @@ def require_login(*, app_name: str = "Decarbonify") -> str:
         st.error(str(exc))
         st.stop()
 
-    st.link_button("Sign in with Google", auth_url, use_container_width=True)
+    if st.session_state.get(_OAUTH_REDIRECTING_KEY):
+        st.info("Redirecting to Google sign-in…")
+        escaped = auth_url.replace("'", "%27")
+        st.markdown(
+            f"<meta http-equiv='refresh' content='0; url={escaped}'>",
+            unsafe_allow_html=True,
+        )
+        st.stop()
+
+    if st.button("Sign in with Google", use_container_width=True, type="primary"):
+        st.session_state[_OAUTH_REDIRECTING_KEY] = True
+        st.rerun()
 
     # Optional hints
     if isinstance(cfg.get("allowed_domains"), list) and cfg.get("allowed_domains"):

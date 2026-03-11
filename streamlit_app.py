@@ -9,6 +9,7 @@ import streamlit as st
 from decarbonify import auth
 from decarbonify.portfolio_index import index_portfolio
 from decarbonify.portfolio_io import as_list, load_portfolio_from_bytes, load_portfolio_from_path, safe_str
+from decarbonify.portfolio_reorder import PortfolioReorderError, can_move_preorder, move_preorder
 from decarbonify.recommendations import openai_client_available
 from decarbonify.ui_asset_detail import render_asset_detail_and_recommendations
 from decarbonify.ui_chat import render_chat
@@ -23,6 +24,18 @@ def _portfolio_fingerprint(portfolio: Dict[str, Any]) -> str:
         return str(hash(json.dumps(portfolio, sort_keys=True, ensure_ascii=False)))
     except Exception:
         return str(id(portfolio))
+
+
+def _deepcopy_jsonable(value: Any) -> Any:
+    # Good enough for this app's JSON-shaped portfolio.
+    return json.loads(json.dumps(value, ensure_ascii=False))
+
+
+def _find_node_id_by_data_obj_id(nodes, target_obj_id: int) -> str:
+    for n in nodes:
+        if id(n.data) == target_obj_id:
+            return n.node_id
+    return ""
 
 
 @st.cache_data(show_spinner=False)
@@ -80,22 +93,49 @@ with header_right:
 
 try:
     if source == "Upload JSON" and uploaded is not None:
-        portfolio = load_portfolio_from_bytes(uploaded.getvalue())
+        loaded_portfolio = load_portfolio_from_bytes(uploaded.getvalue())
     else:
-        portfolio = _load_default_portfolio()
+        loaded_portfolio = _load_default_portfolio()
 except Exception as exc:
     st.error(str(exc))
     st.stop()
 
+
+# Keep an editable in-memory portfolio (no persistence) so we can reorder.
+if (
+    "portfolio" not in st.session_state
+    or st.session_state.get("portfolio_source") != source
+    or (source == "Upload JSON" and uploaded is not None and st.session_state.get("uploaded_name") != uploaded.name)
+):
+    st.session_state.portfolio = _deepcopy_jsonable(loaded_portfolio)
+    st.session_state.portfolio_source = source
+    st.session_state.uploaded_name = uploaded.name if uploaded is not None else None
+    st.session_state.asset_tree_initialized = False
+    st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
+
+
+portfolio: Dict[str, Any] = st.session_state.portfolio
+
 nodes, node_by_id = index_portfolio(portfolio)
+
+if "pending_select_asset_obj_id" in st.session_state:
+    pending_id = int(st.session_state.pending_select_asset_obj_id)
+    new_selected = _find_node_id_by_data_obj_id(nodes, pending_id)
+    if new_selected:
+        st.session_state.selected_node_id = new_selected
+        st.session_state.asset_tree_initialized = False
+        st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
+    del st.session_state.pending_select_asset_obj_id
 
 current_fp = _portfolio_fingerprint(portfolio)
 if st.session_state.get("portfolio_fp") != current_fp:
     st.session_state.portfolio_fp = current_fp
     st.session_state.asset_tree_initialized = False
-    st.session_state.selected_node_id = nodes[0].node_id if nodes else ""
+    st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
 
 if "selected_node_id" not in st.session_state:
+    st.session_state.selected_node_id = nodes[0].node_id if nodes else ""
+elif st.session_state.selected_node_id and st.session_state.selected_node_id not in node_by_id:
     st.session_state.selected_node_id = nodes[0].node_id if nodes else ""
 
 
@@ -111,13 +151,41 @@ with header_left:
 with st.sidebar:
     auth.render_logout_sidebar()
 
+    tree_key = f"asset_tree_{int(st.session_state.get('asset_tree_nonce', 0))}"
+
     selected_node_id, _changed = render_asset_hierarchy_sidebar(
         portfolio=portfolio,
         nodes=nodes,
         node_by_id=node_by_id,
         selected_node_id=str(st.session_state.selected_node_id),
+        tree_key=tree_key,
     )
     st.session_state.selected_node_id = selected_node_id
+
+    if st.session_state.selected_node_id:
+        can_up = can_move_preorder(portfolio, node_id=st.session_state.selected_node_id, direction=-1)
+        can_down = can_move_preorder(portfolio, node_id=st.session_state.selected_node_id, direction=1)
+        up_col, down_col = st.columns(2, gap="small")
+        with up_col:
+            if st.button("Up", use_container_width=True, disabled=not can_up):
+                try:
+                    moved, _op = move_preorder(portfolio, node_id=st.session_state.selected_node_id, direction=-1)
+                    st.session_state.pending_select_asset_obj_id = id(moved)
+                    st.session_state.asset_tree_initialized = False
+                    st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
+                    st.rerun()
+                except PortfolioReorderError as exc:
+                    st.error(str(exc))
+        with down_col:
+            if st.button("Down", use_container_width=True, disabled=not can_down):
+                try:
+                    moved, _op = move_preorder(portfolio, node_id=st.session_state.selected_node_id, direction=1)
+                    st.session_state.pending_select_asset_obj_id = id(moved)
+                    st.session_state.asset_tree_initialized = False
+                    st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
+                    st.rerun()
+                except PortfolioReorderError as exc:
+                    st.error(str(exc))
 
 
 selected_node = node_by_id.get(st.session_state.selected_node_id)

@@ -67,6 +67,7 @@ def render_asset_hierarchy_sidebar(
     nodes: List[AssetNode],
     node_by_id: Dict[str, AssetNode],
     selected_node_id: str,
+    tree_key: str = "asset_tree",
 ) -> Tuple[str, bool]:
     """Render the hierarchy selector.
 
@@ -96,13 +97,13 @@ def render_asset_hierarchy_sidebar(
             select_internal_nodes=True,
             open_by_default=True,
             height=600,
-            key="asset_tree",
+            key=tree_key,
         )
         st.session_state.asset_tree_initialized = True
 
         candidate = selected_node_data
         if candidate is None:
-            candidate = st.session_state.get("asset_tree")
+            candidate = st.session_state.get(tree_key)
         if isinstance(candidate, dict) and candidate.get("id") in node_by_id:
             new_id = str(candidate["id"])
             if new_id != selected_node_id:
