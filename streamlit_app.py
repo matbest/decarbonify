@@ -55,10 +55,19 @@ except Exception:  # pragma: no cover
                 walk(asset.get("assets"))
 
         walk(portfolio.get("assets"))
+
+
+# Backward-compat shim: some deployments may not yet have ensure_asset_ontology_fields.
+try:
+    from decarbonify.portfolio_io import ensure_asset_ontology_fields  # type: ignore
+except Exception:  # pragma: no cover
+    def ensure_asset_ontology_fields(portfolio: Dict[str, Any]) -> None:  # type: ignore
+        return
 from decarbonify.portfolio_reorder import PortfolioReorderError, can_move_preorder, move_preorder
 from decarbonify.recommendations import openai_client_available
 from decarbonify.state_store import load_portfolio_state, save_portfolio_state
-from decarbonify.portfolio_edit import add_child_asset, explain_disallowed_child, remove_asset_snapshot
+from decarbonify.ontology import CORE_TYPES, normalize_core_type
+from decarbonify.portfolio_edit import add_child_asset, explain_disallowed_child_assets, remove_asset_snapshot
 from decarbonify.ui_asset_detail import render_asset_detail_and_recommendations
 from decarbonify.ui_chat import render_chat
 from decarbonify.ui_sidebar import inject_sidebar_nowrap_css, render_asset_hierarchy_sidebar
@@ -143,20 +152,74 @@ def _load_default_portfolio() -> Dict[str, Any]:
         "assets": [
             {
                 "name": "Heelands Site",
-                "type": "land",
+                "core_type": "place",
+                "subtype": "site",
+                "current_role": "passive",
+                "location": "Heelands",
+                "quantity": 1,
+                "attributes": {},
                 "assets": [
                     {
                         "name": "Heelands Meeting Centre",
-                        "type": "building",
+                        "core_type": "place",
+                        "subtype": "building",
+                        "current_role": "passive",
+                        "location": "Heelands Site",
+                        "quantity": 1,
+                        "attributes": {},
                         "assets": [
-                            {"name": "Kitchen", "type": "room"},
-                            {"name": "Gas Boiler", "type": "energy_system", "fuel": "gas"},
+                            {
+                                "name": "Kitchen",
+                                "core_type": "place",
+                                "subtype": "kitchen",
+                                "current_role": "passive",
+                                "location": "Heelands Meeting Centre",
+                                "quantity": 1,
+                                "attributes": {},
+                            },
+                            {
+                                "name": "Gas Boiler",
+                                "core_type": "energy_system",
+                                "subtype": "boiler",
+                                "current_role": "converter",
+                                "location": "Heelands Meeting Centre",
+                                "quantity": 1,
+                                "attributes": {"fuel": "gas"},
+                                "fuel": "gas",
+                            },
                         ],
                     },
-                    {"name": "Solar Panels", "type": "energy_generation"},
+                    {
+                        "name": "Solar Panels",
+                        "core_type": "energy_system",
+                        "subtype": "solar_pv",
+                        "current_role": "producer",
+                        "location": "Heelands Site",
+                        "quantity": 1,
+                        "attributes": {},
+                    },
                 ],
             },
-            {"name": "Football Field", "type": "land", "assets": [{"name": "Floodlights", "type": "lighting"}]},
+            {
+                "name": "Football Field",
+                "core_type": "place",
+                "subtype": "land",
+                "current_role": "passive",
+                "location": "",
+                "quantity": 1,
+                "attributes": {},
+                "assets": [
+                    {
+                        "name": "Floodlights",
+                        "core_type": "asset",
+                        "subtype": "lighting",
+                        "current_role": "consumer",
+                        "location": "Football Field",
+                        "quantity": None,
+                        "attributes": {},
+                    }
+                ],
+            },
         ],
     }
 
@@ -267,6 +330,8 @@ def _refresh_only() -> None:
 ensure_asset_ids(portfolio, id_key="_id")
 # Ensure data_fields schema exists for all assets (idempotent).
 ensure_asset_data_fields(portfolio)
+# Ensure optional ontology fields exist for all assets (idempotent).
+ensure_asset_ontology_fields(portfolio)
 
 nodes, node_by_id = index_portfolio(portfolio)
 
@@ -371,11 +436,26 @@ with st.sidebar:
                 st.warning("This asset is missing an _id, so children can't be added here yet.")
             else:
                 name_key = f"sb_add_child_name::{asset_id}"
-                type_key = f"sb_add_child_type::{asset_id}"
+                ct_key = f"sb_add_child_core_type::{asset_id}"
+                st_key = f"sb_add_child_subtype::{asset_id}"
                 desc_key = f"sb_add_child_desc::{asset_id}"
 
                 child_name = st.text_input("Name", key=name_key, label_visibility="collapsed", placeholder="Name")
-                child_type = st.text_input("Type", value="asset", key=type_key, label_visibility="collapsed", placeholder="Type")
+                ct_options = ["asset"] + [t for t in CORE_TYPES if t != "asset"]
+                child_core_type = st.selectbox(
+                    "Core type",
+                    ct_options,
+                    index=0,
+                    key=ct_key,
+                    label_visibility="collapsed",
+                )
+                child_subtype = st.text_input(
+                    "Subtype",
+                    value="",
+                    key=st_key,
+                    label_visibility="collapsed",
+                    placeholder="Subtype (optional)",
+                )
                 child_desc = st.text_input(
                     "Description (optional)",
                     key=desc_key,
@@ -390,15 +470,13 @@ with st.sidebar:
                 ):
                     new_asset: Dict[str, Any] = {
                         "name": (child_name or "").strip(),
-                        "type": (child_type or "asset").strip() or "asset",
+                        "core_type": normalize_core_type(child_core_type),
+                        "subtype": (child_subtype or "").strip(),
                     }
                     if (child_desc or "").strip():
                         new_asset["description"] = child_desc.strip()
 
-                    disallowed = explain_disallowed_child(
-                        parent_type=safe_str(asset.get("type")),
-                        child_type=safe_str(new_asset.get("type")),
-                    )
+                    disallowed = explain_disallowed_child_assets(parent_asset=asset, child_asset=new_asset)
                     if disallowed:
                         st.error(disallowed)
                     else:
@@ -408,7 +486,8 @@ with st.sidebar:
                         else:
                             ensure_asset_ids(portfolio, id_key="_id")
                             ensure_asset_data_fields(portfolio)
-                            for k in (name_key, type_key, desc_key):
+                            ensure_asset_ontology_fields(portfolio)
+                            for k in (name_key, ct_key, st_key, desc_key):
                                 st.session_state.pop(k, None)
                             _refresh_only()
 
@@ -458,7 +537,9 @@ with main_left:
 
         with st.expander("Add root asset", expanded=False):
             root_name = st.text_input("Name", key="add_root_name")
-            root_type = st.text_input("Type", value="asset", key="add_root_type")
+            ct_options = ["asset"] + [t for t in CORE_TYPES if t != "asset"]
+            root_core_type = st.selectbox("Core type", ct_options, index=0, key="add_root_core_type")
+            root_subtype = st.text_input("Subtype", value="", key="add_root_subtype")
             root_desc = st.text_input("Description (optional)", key="add_root_desc")
             if st.button("Add root", type="primary", disabled=not (root_name or "").strip()):
                 roots = portfolio.get("assets")
@@ -470,18 +551,21 @@ with main_left:
                 new_asset: Dict[str, Any] = {
                     "_id": new_id,
                     "name": (root_name or "").strip(),
-                    "type": (root_type or "asset").strip() or "asset",
+                    "core_type": normalize_core_type(root_core_type),
+                    "subtype": (root_subtype or "").strip(),
                 }
                 if (root_desc or "").strip():
                     new_asset["description"] = root_desc.strip()
                 roots.append(new_asset)
                 ensure_asset_ids(portfolio, id_key="_id")
                 ensure_asset_data_fields(portfolio)
+                ensure_asset_ontology_fields(portfolio)
+                ensure_asset_ontology_fields(portfolio)
 
                 st.session_state.selected_node_id = new_id
                 st.session_state.asset_tree_initialized = False
                 st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
-                for k in ("add_root_name", "add_root_type", "add_root_desc"):
+                for k in ("add_root_name", "add_root_core_type", "add_root_subtype", "add_root_desc"):
                     st.session_state.pop(k, None)
                 st.rerun()
     else:

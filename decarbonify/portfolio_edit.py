@@ -4,92 +4,90 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from .portfolio_io import as_list, safe_str
+from .ontology import hierarchy_category
 
 
-def normalize_asset_type(asset_type: str) -> str:
-    t = safe_str(asset_type).strip().lower()
-    return t or "asset"
+def _asset_from_kind_string(kind: str) -> Dict[str, Any]:
+    """Best-effort compatibility for older call sites.
 
-
-_LANDLIKE_TYPES = {
-    "land",
-    "natural_feature",
-    "trees",
-    "woodland",
-    "wetlands",
-    "soil",
-    "grassland",
-}
-
-_BUILDINGLIKE_TYPES = {"building"}
-_ROOMLIKE_TYPES = {"room"}
-
-# Types that usually represent equipment/components rather than places.
-_COMPONENTLIKE_TYPES = {
-    "energy_system",
-    "energy_generation",
-    "lighting",
-    "equipment",
-    "infrastructure",
-}
-
-
-def _type_category(asset_type: str) -> str:
-    t = normalize_asset_type(asset_type)
-    if t in _LANDLIKE_TYPES:
-        return "land"
-    if t in _BUILDINGLIKE_TYPES:
-        return "building"
-    if t in _ROOMLIKE_TYPES:
-        return "room"
-    if t in _COMPONENTLIKE_TYPES:
-        return "component"
-    return "other"
-
-
-def can_add_child_type(*, parent_type: str, child_type: str) -> bool:
-    """Return True if a parent asset of parent_type can contain a child of child_type.
-
-    This is intentionally permissive for unknown/custom types, but enforces the
-    main place-hierarchy constraints (e.g. buildings cannot contain land).
+    Accepts:
+      - "core_type"
+      - "core_type/subtype"
+      - legacy place-ish tokens like "building" or "room" (treated as place subtypes)
     """
 
-    pt = normalize_asset_type(parent_type)
-    ct = normalize_asset_type(child_type)
+    s = safe_str(kind).strip()
+    if not s:
+        return {"core_type": "asset", "subtype": ""}
+    if "/" in s:
+        core, sub = s.split("/", 1)
+        return {"core_type": core.strip(), "subtype": sub.strip()}
+    if s.lower() in {"land", "building", "room"}:
+        return {"core_type": "place", "subtype": s.strip()}
+    return {"core_type": s.strip(), "subtype": ""}
 
-    # The generic type acts as an "escape hatch" and is always allowed.
-    if pt == "asset" or ct == "asset":
+
+def can_add_child(*, parent_asset: Dict[str, Any], child_asset: Dict[str, Any]) -> bool:
+    """Return True if parent_asset can contain child_asset.
+
+    This preserves the existing containment constraints, but is driven by
+    ontology fields (core_type/subtype) instead of legacy asset['type'].
+    """
+
+    parent_cat = hierarchy_category(parent_asset)
+    child_cat = hierarchy_category(child_asset)
+
+    # Escape hatch: generic assets are always allowed.
+    if safe_str(parent_asset.get("core_type")).strip().lower() == "asset":
+        return True
+    if safe_str(child_asset.get("core_type")).strip().lower() == "asset":
         return True
 
-    parent_cat = _type_category(pt)
-    child_cat = _type_category(ct)
-
-    # Key constraints:
-    # - Buildings cannot contain land-like assets (incl. natural features)
     if parent_cat == "building" and child_cat == "land":
         return False
-    # - Rooms cannot contain buildings or land-like assets
     if parent_cat == "room" and child_cat in {"building", "land"}:
         return False
-    # - Component-like assets cannot contain place-like assets
-    if parent_cat == "component" and child_cat in {"room", "building", "land"}:
+    if parent_cat == "component" and child_cat in {"room", "building", "land", "place"}:
         return False
 
     return True
 
 
-def explain_disallowed_child(*, parent_type: str, child_type: str) -> Optional[str]:
-    if can_add_child_type(parent_type=parent_type, child_type=child_type):
+def explain_disallowed_child_assets(*, parent_asset: Dict[str, Any], child_asset: Dict[str, Any]) -> Optional[str]:
+    if can_add_child(parent_asset=parent_asset, child_asset=child_asset):
         return None
-    pt = normalize_asset_type(parent_type)
-    ct = normalize_asset_type(child_type)
-    if _type_category(pt) == "building" and _type_category(ct) == "land":
+    parent_cat = hierarchy_category(parent_asset)
+    child_cat = hierarchy_category(child_asset)
+    if parent_cat == "building" and child_cat == "land":
         return "A building cannot contain land; add that land asset under a land parent instead."
-    if _type_category(pt) == "room" and _type_category(ct) in {"building", "land"}:
+    if parent_cat == "room" and child_cat in {"building", "land"}:
         return "A room cannot contain buildings or land; add it higher in the hierarchy (e.g. under a building or land)."
-    if _type_category(pt) == "component" and _type_category(ct) in {"room", "building", "land"}:
+    if parent_cat == "component" and child_cat in {"room", "building", "land"}:
         return "Equipment/components cannot contain places (land/buildings/rooms)."
-    return f"A '{pt}' cannot contain a '{ct}'."
+    if parent_cat == "component" and child_cat == "place":
+        return "Equipment/components cannot contain places."
+    return "That child asset isn't allowed here."
+
+
+def can_add_child_type(*, parent_type: str, child_type: str) -> bool:
+    """Compatibility wrapper (deprecated).
+
+    New code should call can_add_child(parent_asset=..., child_asset=...).
+    """
+
+    return can_add_child(
+        parent_asset=_asset_from_kind_string(parent_type),
+        child_asset=_asset_from_kind_string(child_type),
+    )
+
+
+def explain_disallowed_child(*, parent_type: str, child_type: str) -> Optional[str]:
+    """Compatibility wrapper (deprecated)."""
+
+    return explain_disallowed_child_assets(
+        parent_asset=_asset_from_kind_string(parent_type),
+        child_asset=_asset_from_kind_string(child_type),
+    )
 
 
 @dataclass
@@ -204,9 +202,7 @@ def add_child_asset(
     if not ref:
         return False
 
-    parent_type = safe_str(ref.asset.get("type"))
-    child_type = safe_str(child_asset.get("type"))
-    if not can_add_child_type(parent_type=parent_type, child_type=child_type):
+    if not can_add_child(parent_asset=ref.asset, child_asset=child_asset):
         return False
 
     children = ref.asset.get("assets")
@@ -232,13 +228,12 @@ def add_sibling_asset_after(
         return False
 
     # Enforce the same parent→child constraints for sibling insertion.
-    parent_type = "asset"
+    parent_asset: Dict[str, Any] = {"core_type": "asset", "subtype": ""}
     if ref.parent_id:
         parent_ref = find_asset_ref(portfolio, asset_id=ref.parent_id, id_key=id_key)
         if parent_ref and isinstance(parent_ref.asset, dict):
-            parent_type = safe_str(parent_ref.asset.get("type")) or parent_type
-    child_type = safe_str(new_asset.get("type"))
-    if not can_add_child_type(parent_type=parent_type, child_type=child_type):
+            parent_asset = parent_ref.asset
+    if not can_add_child(parent_asset=parent_asset, child_asset=new_asset):
         return False
 
     insert_at = ref.index_in_parent + 1

@@ -6,6 +6,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from .portfolio_io import safe_str
+from .ontology import display_kind, normalize_core_type, search_text
 from .recommendations import openai_client_available
 
 
@@ -41,21 +42,19 @@ def _field_effective_value(asset: Dict[str, Any], key: str) -> Any:
 
 
 def _is_solar_asset(asset: Dict[str, Any]) -> bool:
-    t = safe_str(asset.get("type")).lower()
-    n = safe_str(asset.get("name")).lower()
-    if any(x in t for x in ["solar", "pv", "energy_generation", "renewable"]):
+    ct = normalize_core_type(safe_str(asset.get("core_type")) or "asset")
+    st = safe_str(asset.get("subtype")).lower()
+    txt = search_text(asset)
+    if ct == "energy_system" and any(x in (st + " " + txt) for x in ["solar", "pv", "renewable", "wind"]):
         return True
-    if any(x in n for x in ["solar", "pv", "panel"]):
+    if any(x in txt for x in ["solar", "pv", "panel"]):
         return True
     return False
 
 
 def _is_lighting_asset(asset: Dict[str, Any]) -> bool:
-    t = safe_str(asset.get("type")).lower()
-    n = safe_str(asset.get("name")).lower()
-    if any(x in t for x in ["light", "lighting", "floodlight", "lamp", "led"]):
-        return True
-    if any(x in n for x in ["light", "lighting", "floodlight", "lamp", "led"]):
+    txt = search_text(asset)
+    if any(x in txt for x in ["light", "lighting", "floodlight", "lamp", "led"]):
         return True
     return False
 
@@ -243,7 +242,7 @@ def suggest_emissions_inputs(
     model: str = str(model_or_err)
 
     # Provide only minimal context to keep this per-asset.
-    asset_type = safe_str(asset.get("type"))
+    asset_kind = display_kind(asset)
     asset_name = safe_str(asset.get("name"))
     inferred_fuel = _infer_fuel(asset)
 
@@ -293,7 +292,7 @@ def suggest_emissions_inputs(
         f"- Limit to at most {max_fields} fields.\n"
         "Return schema: {\"reply\": str, \"fields\": [ {\"key\": str, \"label\": str, \"kind\": \"number\"|\"string\"|\"boolean\", \"unit\": str, \"question\": str} ] }\n\n"
         f"Asset name: {asset_name}\n"
-        f"Asset type: {asset_type}\n"
+        f"Asset kind: {asset_kind}\n"
         f"Inferred fuel (if any): {inferred_fuel}\n"
         f"Existing fields presence: {json.dumps(present, ensure_ascii=False)}\n"
         f"{missing_hint}"
@@ -445,7 +444,9 @@ def estimate_emissions_tco2e_per_year(
 
     payload = {
         "name": safe_str(asset.get("name")),
-        "type": safe_str(asset.get("type")),
+        "kind": display_kind(asset),
+        "core_type": safe_str(asset.get("core_type")),
+        "subtype": safe_str(asset.get("subtype")),
         "fuel": fuel_effective,
         "available_inputs": available,
     }

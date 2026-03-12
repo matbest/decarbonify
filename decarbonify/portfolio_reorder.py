@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .portfolio_io import as_list, safe_str
+from .ontology import display_kind
 
 
 class PortfolioReorderError(ValueError):
@@ -148,5 +149,5 @@ def can_move_preorder(portfolio: Dict[str, Any], *, node_id: str, direction: int
 
 def describe_node(ref: PreorderRef) -> str:
     name = safe_str(ref.asset.get("name"))
-    asset_type = safe_str(ref.asset.get("type"))
-    return f"{name} ({asset_type})".strip()
+    kind = display_kind(ref.asset)
+    return f"{name} ({kind})".strip()

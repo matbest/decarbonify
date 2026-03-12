@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping
 
 from .emissions import effective_emissions_tco2e_per_year
+from .ontology import hierarchy_category, normalize_core_type, search_text
 from .portfolio_io import safe_str
 
 
@@ -30,38 +32,91 @@ def openai_client_available() -> bool:
     return bool(os.environ.get("OPENAI_API_KEY"))
 
 
+def recommendations_model() -> str:
+    """Model used for the recommendations 'second pass'.
+
+    This is intentionally separate from other AI usage so you can swap models
+    (or providers later) without affecting chat/emissions estimation.
+    """
+
+    return os.environ.get("OPENAI_RECOMMENDATIONS_MODEL") or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+
+
+def generate_recommendations_bundle(portfolio: Dict[str, Any], asset: Dict[str, Any]) -> Dict[str, Any]:
+    """Generate and return the stored per-asset recommendations structure."""
+
+    used_openai = openai_client_available()
+    model = recommendations_model() if used_openai else ""
+    items = llm_recommendations(portfolio, asset) if used_openai else heuristic_recommendations(asset)
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "generated_by": {
+            "provider": "openai" if used_openai else "heuristic",
+            "model": model,
+        },
+        "items": items,
+    }
+
+
+def extract_recommendation_items(asset: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Read recommendations from the new bundle, with legacy fallback."""
+
+    bundle = asset.get("recommendations")
+    if isinstance(bundle, dict):
+        items = bundle.get("items")
+        if isinstance(items, list):
+            return [r for r in items if isinstance(r, dict)]
+
+    legacy = asset.get("llm_recommendations")
+    if isinstance(legacy, list):
+        return [r for r in legacy if isinstance(r, dict)]
+
+    return []
+
+
 def carbon_signal(asset: Dict[str, Any]) -> str:
-    asset_type = safe_str(asset.get("type", ""))
+    ct = normalize_core_type(safe_str(asset.get("core_type")) or "asset")
+    st = safe_str(asset.get("subtype")).strip().lower().replace(" ", "_")
     fuel = safe_str(asset.get("fuel", "")).lower()
+    txt = search_text(asset)
 
     if fuel in {"gas", "diesel", "petrol", "oil", "lpg"}:
         return "emits (combustion fuel)"
-    if asset_type in {"energy_generation", "renewable_energy", "solar", "solar_panels"}:
+
+    if ct == "energy_system" and ("solar" in st or "pv" in st or "solar" in txt or "pv" in txt or "wind" in txt):
         return "reduces (onsite generation)"
-    if asset_type in {"natural_feature", "trees", "woodland", "wetlands", "soil", "grassland"}:
+
+    if ct == "place" and hierarchy_category(asset) == "land" and any(x in (st + " " + txt) for x in ["trees", "woodland", "wetlands", "soil", "grassland"]):
         return "sequesters (natural carbon)"
-    if asset_type in {"lighting", "equipment", "infrastructure", "building", "room"}:
+
+    if ct in {"asset", "energy_system"} and any(x in txt for x in ["light", "lighting", "equipment", "hvac", "boiler", "heat"]):
         return "consumes (likely electricity/heat)"
-    if asset_type in {"energy_system", "hvac", "boiler"}:
-        return "emits/consumes (heating system)"
+
+    if ct == "place" and st in {"building", "room"}:
+        return "consumes (likely electricity/heat)"
+
     return "unknown"
 
 
 def heuristic_recommendations(asset: Dict[str, Any]) -> List[Dict[str, Any]]:
-    asset_type = safe_str(asset.get("type", ""))
+    ct = normalize_core_type(safe_str(asset.get("core_type")) or "asset")
+    st = safe_str(asset.get("subtype")).strip().lower().replace(" ", "_")
+    cat = hierarchy_category(asset)
     fuel = safe_str(asset.get("fuel", "")).lower()
     name = safe_str(asset.get("name", "asset"))
+    txt = search_text(asset)
 
     recs: List[Dict[str, Any]] = []
 
-    if fuel == "gas" or "boiler" in name.lower():
+    if fuel == "gas" or "boiler" in txt:
         recs.append(
             {
                 "title": "Switch gas boiler to heat pump",
                 "estimated_saving_tco2_per_year": 2.4,
                 "description": "Switching from gas combustion to an efficient heat pump typically cuts operational emissions, especially with greener electricity.",
                 "action": "switch",
-                "add_asset": {"name": "Heat Pump", "type": "energy_system", "fuel": "electric"},
+                "add_asset": {"name": "Heat Pump", "core_type": "energy_system", "subtype": "heat_pump", "fuel": "electric"},
             }
         )
         recs.append(
@@ -73,7 +128,7 @@ def heuristic_recommendations(asset: Dict[str, Any]) -> List[Dict[str, Any]]:
             }
         )
 
-    if asset_type in {"lighting", "infrastructure"} or "light" in name.lower():
+    if any(x in txt for x in ["light", "lighting", "floodlight", "lamp", "led"]):
         recs.append(
             {
                 "title": "Upgrade to LED + controls",
@@ -83,18 +138,18 @@ def heuristic_recommendations(asset: Dict[str, Any]) -> List[Dict[str, Any]]:
             }
         )
 
-    if asset_type in {"land", "natural_feature"}:
+    if ct == "place" and cat == "land":
         recs.append(
             {
                 "title": "Add trees / biodiversity planting",
                 "estimated_saving_tco2_per_year": 0.5,
                 "description": "Tree and hedgerow planting, soil improvements, and reduced mowing can increase sequestration over time.",
                 "action": "add",
-                "add_asset": {"name": "Trees / planting", "type": "natural_feature", "feature": "trees"},
+                "add_asset": {"name": "Trees / planting", "core_type": "place", "subtype": "trees", "feature": "trees"},
             }
         )
 
-    if asset_type in {"building", "room"}:
+    if ct == "place" and st in {"building", "room"}:
         recs.append(
             {
                 "title": "Add smart heating controls",
@@ -104,7 +159,7 @@ def heuristic_recommendations(asset: Dict[str, Any]) -> List[Dict[str, Any]]:
             }
         )
 
-    if asset_type in {"energy_generation", "renewable_energy"} or "solar" in name.lower():
+    if (ct == "energy_system" and ("solar" in st or "pv" in st)) or "solar" in txt or "pv" in txt:
         recs.append(
             {
                 "title": "Verify inverter performance + monitoring",
@@ -126,7 +181,7 @@ def llm_recommendations(portfolio: Dict[str, Any], asset: Dict[str, Any]) -> Lis
     except Exception:
         return heuristic_recommendations(asset)
 
-    model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    model = recommendations_model()
     client = OpenAI()
 
     portfolio_name = safe_str(portfolio.get("portfolio_name"))

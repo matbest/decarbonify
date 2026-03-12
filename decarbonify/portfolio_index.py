@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from .ontology import display_kind
 from .portfolio_io import as_list, safe_str
 
 
@@ -10,7 +11,7 @@ from .portfolio_io import as_list, safe_str
 class AssetNode:
     node_id: str
     name: str
-    type: str
+    kind: str
     data: Dict[str, Any]
     parent_id: Optional[str]
     depth: int
@@ -29,13 +30,13 @@ def iter_assets_tree(
         if not isinstance(asset, dict):
             continue
         name = safe_str(asset.get("name", f"Unnamed {idx}"))
-        asset_type = safe_str(asset.get("type", "asset"))
+        kind = display_kind(asset)
         node_id = safe_str(asset.get(id_key))
         path = name if not parent_path else f"{parent_path} / {name}"
         yield AssetNode(
             node_id=node_id,
             name=name,
-            type=asset_type,
+            kind=kind,
             data=asset,
             parent_id=parent_id,
             depth=depth,

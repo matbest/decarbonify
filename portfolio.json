@@ -3,77 +3,147 @@
   "assets": [
     {
       "name": "Heelands Site",
-      "type": "land",
+      "core_type": "place",
+      "subtype": "site",
+      "current_role": "passive",
+      "location": "Heelands",
+      "quantity": 1,
+      "attributes": {},
       "assets": [
         {
           "name": "Heelands Meeting Centre",
-          "type": "building",
+          "core_type": "place",
+          "subtype": "building",
+          "current_role": "passive",
+          "location": "Heelands Site",
+          "quantity": 1,
+          "attributes": {},
           "size_m2": 450,
           "usage": "community meetings and events",
           "assets": [
             {
               "name": "Kitchen",
-              "type": "room",
+              "core_type": "place",
+              "subtype": "kitchen",
+              "current_role": "passive",
+              "location": "Heelands Meeting Centre",
+              "quantity": 1,
+              "attributes": {},
               "assets": [
                 {
                   "name": "Fridge/Freezer",
-                  "type": "equipment",
+                  "core_type": "asset",
+                  "subtype": "refrigerator_freezer",
+                  "current_role": "consumer",
+                  "location": "Kitchen",
+                  "quantity": 1,
+                  "attributes": {"energy_source": "electricity"},
                   "energy_source": "electricity"
                 }
               ]
             },
             {
               "name": "Main Hall",
-              "type": "room"
+              "core_type": "place",
+              "subtype": "hall",
+              "current_role": "passive",
+              "location": "Heelands Meeting Centre",
+              "quantity": 1,
+              "attributes": {}
             },
             {
               "name": "Gas Boiler",
-              "type": "energy_system",
+              "core_type": "energy_system",
+              "subtype": "boiler",
+              "current_role": "converter",
+              "location": "Heelands Meeting Centre",
+              "quantity": 1,
+              "attributes": {"fuel": "gas"},
               "fuel": "gas",
               "usage": "space heating and hot water"
             },
             {
               "name": "Lighting",
-              "type": "lighting",
+              "core_type": "asset",
+              "subtype": "lighting",
+              "current_role": "consumer",
+              "location": "Heelands Meeting Centre",
+              "quantity": 1,
+              "attributes": {"energy_source": "electricity"},
               "energy_source": "electricity"
             }
           ]
         },
         {
           "name": "Solar Panels",
-          "type": "energy_generation",
+          "core_type": "energy_system",
+          "subtype": "solar_pv",
+          "current_role": "producer",
+          "location": "Heelands Site",
+          "quantity": 1,
+          "attributes": {"technology": "solar_pv"},
           "technology": "solar_pv"
         },
         {
           "name": "Tree Line",
-          "type": "natural_feature",
+          "core_type": "place",
+          "subtype": "trees",
+          "current_role": "passive",
+          "location": "Heelands Site",
+          "quantity": 1,
+          "attributes": {"feature": "trees"},
           "feature": "trees"
         }
       ]
     },
     {
       "name": "Football Field",
-      "type": "land",
+      "core_type": "place",
+      "subtype": "field",
+      "current_role": "passive",
+      "location": "Bradwell Parish",
+      "quantity": 1,
+      "attributes": {},
       "assets": [
         {
           "name": "Floodlights",
-          "type": "lighting",
+          "core_type": "asset",
+          "subtype": "floodlights",
+          "current_role": "consumer",
+          "location": "Football Field",
+          "quantity": 1,
+          "attributes": {"energy_source": "electricity"},
           "energy_source": "electricity"
         },
         {
           "name": "Pitch Grassland",
-          "type": "natural_feature",
+          "core_type": "place",
+          "subtype": "grassland",
+          "current_role": "passive",
+          "location": "Football Field",
+          "quantity": 1,
+          "attributes": {"feature": "grassland"},
           "feature": "grassland"
         }
       ]
     },
     {
       "name": "Allotments",
-      "type": "land",
+      "core_type": "place",
+      "subtype": "allotments",
+      "current_role": "passive",
+      "location": "Bradwell Parish",
+      "quantity": 1,
+      "attributes": {},
       "assets": [
         {
           "name": "Allotment Plots",
-          "type": "natural_feature",
+          "core_type": "place",
+          "subtype": "soil",
+          "current_role": "passive",
+          "location": "Allotments",
+          "quantity": 1,
+          "attributes": {"feature": "soil"},
           "feature": "soil"
         }
       ]

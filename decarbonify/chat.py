@@ -8,7 +8,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .portfolio_index import AssetNode
 from .portfolio_io import as_list, safe_str
-from .portfolio_edit import add_child_asset, can_add_child_type, explain_disallowed_child
+from .ontology import display_kind
+from .portfolio_edit import add_child_asset, can_add_child, explain_disallowed_child_assets
 from .portfolio_io import ensure_asset_ids
 
 
@@ -44,13 +45,22 @@ except Exception:  # pragma: no cover
                 manual = {}
                 entry["manual"] = manual
             manual.setdefault("value", None)
+
+
+# Backward-compat shim: some deployments may not yet have ensure_asset_ontology_fields.
+try:
+    from .portfolio_io import ensure_asset_ontology_fields  # type: ignore
+except Exception:  # pragma: no cover
+    def ensure_asset_ontology_fields(portfolio: Dict[str, Any]) -> None:  # type: ignore
+        return
+
 from .recommendations import openai_client_available
 
 
 def portfolio_compact_summary(nodes: List[AssetNode], max_items: int = 80) -> str:
     lines: List[str] = []
     for n in nodes[:max_items]:
-        lines.append(f"- {n.path} (type={n.type})")
+        lines.append(f"- {n.path} (kind={n.kind})")
     if len(nodes) > max_items:
         lines.append(f"- ... ({len(nodes) - max_items} more)")
     return "\n".join(lines)
@@ -114,9 +124,9 @@ def _subtree_compact_summary(asset: Dict[str, Any], *, max_items: int = 50) -> s
         if len(lines) >= max_items:
             return
         name = safe_str(a.get("name")) or "Unnamed"
-        asset_type = safe_str(a.get("type")) or "asset"
+        kind = display_kind(a)
         here = name if not path else f"{path} / {name}"
-        lines.append(f"- {here} (type={asset_type})")
+        lines.append(f"- {here} (kind={kind})")
         for ch in as_list(a.get("assets")):
             if isinstance(ch, dict):
                 walk(ch, here)
@@ -161,7 +171,7 @@ def llm_edit_selected_subtree(
     selected_asset = selected_node.data
     selected_id = safe_str(selected_asset.get("_id"))
     selected_path = safe_str(selected_node.path)
-    selected_type = safe_str(selected_asset.get("type"))
+    selected_kind = safe_str(selected_node.kind)
     subtree_summary = _subtree_compact_summary(selected_asset)
 
     def _parse_jsonish(text: str) -> Optional[Dict[str, Any]]:
@@ -202,23 +212,83 @@ def llm_edit_selected_subtree(
                 pass
         return None
 
-    def _infer_type(*, name: str, user_text: str) -> str:
+    def _sanitize_asset_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Coerce/clean optional ontology fields without being destructive."""
+
+        from .ontology import infer_core_type_and_subtype, normalize_core_type, normalize_energy_role
+
+        out: Dict[str, Any] = dict(payload)
+
+        # Normalize a few free-text fields.
+        for k in ("subtype", "location", "description"):
+            if k in out and out[k] is not None:
+                out[k] = safe_str(out.get(k)).strip()
+
+        # core_type
+        if "core_type" in out:
+            ct = safe_str(out.get("core_type")).strip()
+            out["core_type"] = normalize_core_type(ct) if ct else ""
+        elif "type" in out and safe_str(out.get("type")).strip():
+            # LLMs may still emit legacy 'type'. Migrate it immediately.
+            inferred_core, inferred_sub = infer_core_type_and_subtype(legacy_type=safe_str(out.get("type")))
+            out["core_type"] = inferred_core
+            if not safe_str(out.get("subtype")).strip() and inferred_sub:
+                out["subtype"] = inferred_sub
+            out.pop("type", None)
+
+        # Always drop legacy type if present.
+        out.pop("type", None)
+
+        # current_role
+        if "current_role" in out:
+            out["current_role"] = normalize_energy_role(safe_str(out.get("current_role")))
+
+        # potential_roles used to exist in an earlier ontology draft; remove it.
+        out.pop("potential_roles", None)
+
+        # quantity
+        qty = out.get("quantity")
+        if isinstance(qty, (int, float)):
+            pass
+        elif isinstance(qty, str):
+            s = qty.strip()
+            if s:
+                try:
+                    out["quantity"] = float(s) if ("." in s) else int(s)
+                except Exception:
+                    # Leave it absent rather than storing an invalid type.
+                    out.pop("quantity", None)
+            else:
+                out.pop("quantity", None)
+        elif "quantity" in out:
+            out.pop("quantity", None)
+
+        # attributes
+        attrs = out.get("attributes")
+        if isinstance(attrs, dict):
+            pass
+        elif "attributes" in out:
+            out["attributes"] = {}
+
+        return out
+
+    def _infer_core_type_and_subtype(*, name: str, user_text: str) -> Tuple[str, str]:
         s = f"{name} {user_text}".lower()
-        if "building" in s or "clubhouse" in s or "club house" in s or "hall" in s or "centre" in s:
-            inferred = "building"
-        elif "room" in s:
-            inferred = "room"
-        elif "area" in s or "field" in s or "pitch" in s or "court" in s or "grounds" in s:
-            inferred = "land"
-        elif "boiler" in s or "heat pump" in s or "hvac" in s:
-            inferred = "energy_system"
-        elif "solar" in s or "pv" in s:
-            inferred = "energy_generation"
-        elif "light" in s or "lighting" in s or "floodlight" in s:
-            inferred = "lighting"
-        else:
-            inferred = "asset"
-        return inferred
+        if any(x in s for x in ["building", "clubhouse", "club house", "hall", "centre", "warehouse"]):
+            return ("place", "building")
+        if "room" in s:
+            return ("place", "room")
+        if any(x in s for x in ["area", "field", "pitch", "court", "grounds", "land"]):
+            return ("place", "land")
+        if any(x in s for x in ["boiler", "heat pump", "hvac", "chiller", "generator", "battery", "inverter"]):
+            return ("energy_system", "")
+        if any(x in s for x in ["solar", "pv", "wind"]):
+            return ("energy_system", "solar_pv" if "solar" in s or "pv" in s else "")
+        if any(x in s for x in ["electricity", "gas", "water", "diesel"]):
+            return ("resource", "")
+        if any(x in s for x in ["roof", "wall", "window", "floor"]):
+            return ("surface", "")
+        return ("asset", "")
 
     def _guess_asset_name(user_text: str) -> str:
         t = (user_text or "").strip()
@@ -248,18 +318,20 @@ def llm_edit_selected_subtree(
         "You are an assistant that edits a portfolio asset hierarchy. "
         "You may ONLY propose operations that add new child assets under the currently selected node. "
         "Make best-effort assumptions and DO NOT ask for the asset type unless absolutely necessary. "
-        "If the user says 'X building' or similar, use type='building'. Otherwise choose a reasonable type or omit it (it will default to 'asset'). "
-        "Type relationships matter: land/natural features can contain buildings; buildings contain rooms and equipment; buildings and rooms cannot contain land/natural features. "
+        "Use the ontology fields core_type and subtype. If the user says 'X building' or similar, use core_type='place' and subtype='building'. "
+        "Containment rules matter: land/natural features can contain buildings; buildings contain rooms and equipment; buildings and rooms cannot contain land/natural features. "
+        "You MAY include optional ontology fields on the new asset when you can infer them: "
+        "core_type (place/activity/asset/energy_system/resource/surface), subtype, current_role, location, quantity, attributes. "
         "You MUST return STRICT JSON ONLY (no prose, no markdown). "
         "Return JSON with schema: "
-        "{\"reply\": str, \"ops\": [ {\"op\": \"add_child\", \"asset\": {\"name\": str, \"type\": str, ...} } ] }. "
+        "{\"reply\": str, \"ops\": [ {\"op\": \"add_child\", \"asset\": {\"name\": str, \"core_type\": str, \"subtype\": str, ...} } ] }. "
         "Examples: "
-        "- Add a bowls club building -> {\"reply\":\"OK\",\"ops\":[{\"op\":\"add_child\",\"asset\":{\"name\":\"Bowls Club\",\"type\":\"building\"}}]} "
-        "- Add a storage shed -> {\"reply\":\"OK\",\"ops\":[{\"op\":\"add_child\",\"asset\":{\"name\":\"Storage Shed\"}}]} "
+        "- Add a bowls club building -> {\"reply\":\"OK\",\"ops\":[{\"op\":\"add_child\",\"asset\":{\"name\":\"Bowls Club\",\"core_type\":\"place\",\"subtype\":\"building\"}}]} "
+        "- Add a storage shed -> {\"reply\":\"OK\",\"ops\":[{\"op\":\"add_child\",\"asset\":{\"name\":\"Storage Shed\",\"core_type\":\"asset\"}}]} "
         "If you truly need clarification, return {\"reply\": str, \"ops\": []}."
     )
     user = (
-        f"Selected asset (editable scope): {selected_path} (id={selected_id}, type={selected_type})\n"
+        f"Selected asset (editable scope): {selected_path} (id={selected_id}, kind={selected_kind})\n"
         f"Current subtree (paths):\n{subtree_summary}\n\n"
         f"User request: {user_message}\n"
     )
@@ -298,22 +370,25 @@ def llm_edit_selected_subtree(
         name = safe_str(asset_payload.get("name"))
         if not name:
             continue
-        new_asset = dict(asset_payload)
-        # If the model omits type (or leaves it vague), infer a best-effort default.
-        raw_type = safe_str(new_asset.get("type"))
-        if not raw_type:
-            new_asset["type"] = _infer_type(name=name, user_text=user_message)
-        else:
-            new_asset["type"] = raw_type
+        new_asset = _sanitize_asset_payload(asset_payload)
 
-        # Enforce parent→child type relationships. If disallowed, coerce to generic.
-        if not can_add_child_type(parent_type=selected_type, child_type=safe_str(new_asset.get("type"))):
-            why = explain_disallowed_child(parent_type=selected_type, child_type=safe_str(new_asset.get("type")))
+        # If the model omits core_type/subtype, infer best-effort defaults.
+        if not safe_str(new_asset.get("core_type")).strip():
+            inferred_core, inferred_sub = _infer_core_type_and_subtype(name=name, user_text=user_message)
+            new_asset["core_type"] = inferred_core
+            if inferred_sub and not safe_str(new_asset.get("subtype")).strip():
+                new_asset["subtype"] = inferred_sub
+        new_asset.setdefault("subtype", "")
+
+        # Enforce parent→child containment rules. If disallowed, coerce to generic.
+        if not can_add_child(parent_asset=selected_asset, child_asset=new_asset):
+            why = explain_disallowed_child_assets(parent_asset=selected_asset, child_asset=new_asset)
             coercions.append(
-                f"Used type='asset' for '{name}' because '{safe_str(new_asset.get('type'))}' isn't allowed under '{selected_type}'."
+                f"Used core_type='asset' for '{name}' because '{display_kind(new_asset)}' isn't allowed under '{selected_kind}'."
                 + (f" ({why})" if why else "")
             )
-            new_asset["type"] = "asset"
+            new_asset["core_type"] = "asset"
+            new_asset["subtype"] = ""
 
         new_asset.setdefault("_id", uuid.uuid4().hex)
         ok = add_child_asset(portfolio, parent_id=selected_id, child_asset=new_asset)
@@ -327,19 +402,22 @@ def llm_edit_selected_subtree(
         wants_add = "add" in user_message.lower()
         if wants_add:
             guessed_name = _guess_asset_name(user_message)
+            inferred_core, inferred_sub = _infer_core_type_and_subtype(name=guessed_name, user_text=user_message)
             fallback_asset: Dict[str, Any] = {
                 "_id": uuid.uuid4().hex,
                 "name": guessed_name,
-                "type": _infer_type(name=guessed_name, user_text=user_message),
+                "core_type": inferred_core,
+                "subtype": inferred_sub,
             }
 
-            if not can_add_child_type(parent_type=selected_type, child_type=safe_str(fallback_asset.get("type"))):
-                why = explain_disallowed_child(parent_type=selected_type, child_type=safe_str(fallback_asset.get("type")))
+            if not can_add_child(parent_asset=selected_asset, child_asset=fallback_asset):
+                why = explain_disallowed_child_assets(parent_asset=selected_asset, child_asset=fallback_asset)
                 coercions.append(
-                    f"Used type='asset' for '{guessed_name}' because '{safe_str(fallback_asset.get('type'))}' isn't allowed under '{selected_type}'."
+                    f"Used core_type='asset' for '{guessed_name}' because '{display_kind(fallback_asset)}' isn't allowed under '{selected_kind}'."
                     + (f" ({why})" if why else "")
                 )
-                fallback_asset["type"] = "asset"
+                fallback_asset["core_type"] = "asset"
+                fallback_asset["subtype"] = ""
 
             ok = add_child_asset(portfolio, parent_id=selected_id, child_asset=fallback_asset)
             if ok:
@@ -357,5 +435,6 @@ def llm_edit_selected_subtree(
     if applied:
         ensure_asset_ids(portfolio, id_key="_id")
         ensure_asset_data_fields(portfolio)
+        ensure_asset_ontology_fields(portfolio)
 
     return (reply or ("Added." if applied else "No changes applied."), applied, added_asset_id)

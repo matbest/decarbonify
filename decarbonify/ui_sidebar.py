@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 import streamlit as st
 
 from .emissions import is_retired
+from .ontology import display_kind
 from .portfolio_index import AssetNode
 from .portfolio_io import as_list, safe_str
 from .recommendations import heuristic_recommendations, recommendation_id
@@ -120,10 +121,10 @@ def _build_arborist_tree_data(
         if not isinstance(asset, dict):
             continue
         name = safe_str(asset.get("name", f"Unnamed {idx}"))
-        asset_type = safe_str(asset.get("type", "asset"))
+        kind = display_kind(asset)
         node_id = safe_str(asset.get(id_key))
 
-        base_label = f"{name} ({asset_type})"
+        base_label = f"{name} ({kind})"
         if is_retired(asset):
             base_label = _strike(base_label)
         suffix = _format_subtree_suffix(node_id, subtree_totals=subtree_totals)
@@ -227,9 +228,9 @@ def render_asset_hierarchy_sidebar(
             n.node_id: ("   " * n.depth)
             + _truncate_one_line(
                 (
-                    _strike(f"{n.name} ({n.type})")
+                    _strike(f"{n.name} ({n.kind})")
                     if is_retired(n.data)
-                    else f"{n.name} ({n.type})"
+                    else f"{n.name} ({n.kind})"
                 )
                 + _format_subtree_suffix(n.node_id, subtree_totals=subtree_totals),
                 max_chars=55,

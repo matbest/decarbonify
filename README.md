@@ -115,15 +115,25 @@ Example:
 	"assets": [
 		{
 			"name": "Heelands Site",
-			"type": "land",
+			"core_type": "place",
+			"subtype": "site",
+			"current_role": "passive",
+			"location": "Heelands",
+			"quantity": 1,
+			"attributes": {},
 			"assets": [
 				{
 					"name": "Heelands Meeting Centre",
-					"type": "building",
+					"core_type": "place",
+					"subtype": "building",
+					"current_role": "passive",
 					"assets": [
 						{
 							"name": "Gas Boiler",
-							"type": "energy_system",
+							"core_type": "energy_system",
+							"subtype": "boiler",
+							"current_role": "converter",
+							"attributes": {"fuel": "gas"},
 							"fuel": "gas",
 							"data_fields": {
 								"emissions_tco2e_per_year": {

@@ -42,18 +42,24 @@ except Exception:  # pragma: no cover
                 walk(asset.get("assets"))
 
         walk(portfolio.get("assets"))
+
+
+# Backward-compat shim: some deployments may not yet have ensure_asset_ontology_fields.
+try:
+    from .portfolio_io import ensure_asset_ontology_fields  # type: ignore
+except Exception:  # pragma: no cover
+    def ensure_asset_ontology_fields(portfolio: Dict[str, Any]) -> None:  # type: ignore
+        return
 from .portfolio_io import safe_str
 from . import auth
 from .portfolio_edit import (
     RemovedAsset,
     add_child_asset,
     add_sibling_asset_after,
-    can_add_child_type,
-    explain_disallowed_child,
     find_asset_ref,
+    explain_disallowed_child_assets,
     mark_asset_active,
     mark_asset_retired,
-    normalize_asset_type,
     remove_asset_by_id,
     remove_asset_snapshot,
     restore_removed_asset,
@@ -70,14 +76,17 @@ from .emissions import (
 from .llm_emissions import estimate_emissions_tco2e_per_year, suggest_emissions_inputs
 from .recommendations import (
     carbon_signal,
+    extract_recommendation_items,
+    generate_recommendations_bundle,
     heuristic_recommendations,
-    llm_recommendations,
     openai_client_available,
     recommendation_id,
 )
 
 
 def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], selected_node: AssetNode) -> None:
+    ensure_asset_ontology_fields(portfolio)
+
     asset = selected_node.data
     asset_id = safe_str(asset.get("_id"))
 
@@ -143,15 +152,15 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
     def _regenerate_recommendations_for_subtree() -> None:
         if not asset_id:
             return
-        if not openai_client_available():
-            st.warning("AI is disabled (missing OPENAI_API_KEY).")
-            return
 
         with st.spinner("Regenerating recommendations..."):
             for a in iter_asset_and_descendants(asset):
                 if not isinstance(a, dict):
                     continue
-                a["llm_recommendations"] = llm_recommendations(portfolio, a)
+                # Second pass: store a structured bundle per asset.
+                a["recommendations"] = generate_recommendations_bundle(portfolio, a)
+                # Clean up legacy field to avoid confusion.
+                a.pop("llm_recommendations", None)
 
         # Refresh the tree/UI without autosaving.
         st.session_state.asset_tree_initialized = False
@@ -313,82 +322,101 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
 
     with left_panel:
         st.markdown(f"**Path:** {selected_node.path}")
-        type_line, type_edit = st.columns([0.92, 0.08], gap="small")
-        with type_line:
-            st.markdown(
-                f"<div class='dc-asset-type'><strong>Type:</strong> {html.escape(str(selected_node.type))}</div>",
-                unsafe_allow_html=True,
-            )
-        with type_edit:
-            toggle_key = f"type_editor_open::{asset_id or selected_node.node_id}"
-            if toggle_key not in st.session_state:
-                st.session_state[toggle_key] = False
-            if st.button("✎", key=f"type_edit_btn::{asset_id or selected_node.node_id}", help="Edit type"):
-                st.session_state[toggle_key] = not bool(st.session_state.get(toggle_key))
-        st.markdown(f"**Carbon effect (qualitative):** {carbon_signal(asset)}")
 
-        if bool(st.session_state.get(f"type_editor_open::{asset_id or selected_node.node_id}")):
+        core_type = safe_str(asset.get("core_type"))
+        subtype = safe_str(asset.get("subtype"))
+        current_role = safe_str(asset.get("current_role"))
+        location = safe_str(asset.get("location"))
+        quantity_v = asset.get("quantity")
+        quantity_s = ""
+        if isinstance(quantity_v, (int, float)):
+            quantity_s = str(quantity_v)
+        elif quantity_v is not None:
+            quantity_s = safe_str(quantity_v).strip()
+
+        st.markdown(
+            " "
+            + f"<div class='dc-asset-type'><strong>Core type:</strong> {html.escape(core_type or 'asset')}</div>"
+            + (f"<div class='dc-asset-type'><strong>Subtype:</strong> {html.escape(subtype)}</div>" if subtype else "")
+            + (f"<div class='dc-asset-type'><strong>Current role:</strong> {html.escape(current_role)}</div>" if current_role else "")
+            + (f"<div class='dc-asset-type'><strong>Location:</strong> {html.escape(location)}</div>" if location else "")
+            + (f"<div class='dc-asset-type'><strong>Quantity:</strong> {html.escape(quantity_s)}</div>" if quantity_s else ""),
+            unsafe_allow_html=True,
+        )
+
+        with st.expander("Ontology", expanded=False):
             if not asset_id:
                 st.warning("This asset is missing an _id, so it can't be edited safely.")
             else:
-                type_edit_key = f"edit_type::{asset_id}"
-                proposed_raw = st.text_input(
-                    "Type",
-                    value=safe_str(asset.get("type")) or "asset",
-                    key=type_edit_key,
-                    label_visibility="collapsed",
-                    placeholder="Type",
-                )
-                save_col, cancel_col = st.columns([0.20, 0.20], gap="small")
+                from .ontology import CORE_TYPES, ENERGY_ROLES, normalize_core_type, normalize_energy_role
+
+                ct_key = f"ont_core_type::{asset_id}"
+                st_key = f"ont_subtype::{asset_id}"
+                cr_key = f"ont_current_role::{asset_id}"
+                loc_key = f"ont_location::{asset_id}"
+                qty_key = f"ont_quantity::{asset_id}"
+                attrs_key = f"ont_attributes::{asset_id}"
+
+                ct_options = ["asset"] + [t for t in CORE_TYPES if t != "asset"]
+                current_ct = normalize_core_type(core_type or "asset")
+                ct_index = ct_options.index(current_ct) if current_ct in ct_options else 0
+                ct_new = st.selectbox("Core type", ct_options, index=ct_index, key=ct_key)
+
+                subtype_new = st.text_input("Subtype", value=subtype, key=st_key)
+
+                role_options = [""] + list(ENERGY_ROLES)
+                current_cr = normalize_energy_role(current_role)
+                cr_index = role_options.index(current_cr) if current_cr in role_options else 0
+                cr_new = st.selectbox("Current role", role_options, index=cr_index, key=cr_key)
+                location_new = st.text_input("Location", value=location, key=loc_key)
+                quantity_new = st.text_input("Quantity", value=quantity_s, key=qty_key)
+
+                attrs_obj = asset.get("attributes")
+                if not isinstance(attrs_obj, dict):
+                    attrs_obj = {}
+                attrs_text = json.dumps(attrs_obj, ensure_ascii=False, indent=2)
+                attrs_new = st.text_area("Attributes (JSON)", value=attrs_text, height=120, key=attrs_key)
+
+                save_col, _spacer, cancel_col = st.columns([0.20, 0.60, 0.20], gap="small")
                 with save_col:
-                    if st.button(
-                        "Save",
-                        type="primary",
-                        disabled=not (proposed_raw or "").strip(),
-                        key=f"edit_type_save_btn::{asset_id}",
-                    ):
-                        proposed = normalize_asset_type(proposed_raw)
+                    if st.button("Save", type="primary", key=f"ont_save::{asset_id}"):
+                        asset["core_type"] = normalize_core_type(ct_new)
+                        asset["subtype"] = safe_str(subtype_new).strip()
+                        asset["current_role"] = normalize_energy_role(cr_new)
+                        asset["location"] = safe_str(location_new).strip()
 
-                        ok = True
+                        q_s = safe_str(quantity_new).strip()
+                        if not q_s:
+                            asset["quantity"] = None
+                        else:
+                            try:
+                                asset["quantity"] = float(q_s) if "." in q_s else int(q_s)
+                            except Exception:
+                                st.error("Quantity must be a number (or blank).")
+                                st.stop()
 
-                        # Validate against parent relationship (if any).
-                        here_ref = find_asset_ref(portfolio, asset_id=asset_id)
-                        parent_type = "asset"
-                        if here_ref and here_ref.parent_id:
-                            p_ref = find_asset_ref(portfolio, asset_id=here_ref.parent_id)
-                            if p_ref and isinstance(p_ref.asset, dict):
-                                parent_type = safe_str(p_ref.asset.get("type")) or parent_type
-                            if not can_add_child_type(parent_type=parent_type, child_type=proposed):
-                                st.error(
-                                    explain_disallowed_child(parent_type=parent_type, child_type=proposed)
-                                    or "Type not allowed here."
-                                )
-                                ok = False
+                        a_s = safe_str(attrs_new).strip()
+                        if not a_s:
+                            asset["attributes"] = {}
+                        else:
+                            try:
+                                parsed = json.loads(a_s)
+                            except Exception as exc:
+                                st.error(f"Attributes JSON is invalid: {exc}")
+                                st.stop()
+                            if not isinstance(parsed, dict):
+                                st.error("Attributes JSON must be an object (e.g. {\"fuel\": \"gas\"}).")
+                                st.stop()
+                            asset["attributes"] = parsed
 
-                        # Validate that the proposed type can contain existing children.
-                        if ok:
-                            for ch in as_list(asset.get("assets")):
-                                if not isinstance(ch, dict):
-                                    continue
-                                ch_type = safe_str(ch.get("type")) or "asset"
-                                if not can_add_child_type(parent_type=proposed, child_type=ch_type):
-                                    ch_name = safe_str(ch.get("name")) or "child asset"
-                                    msg = explain_disallowed_child(parent_type=proposed, child_type=ch_type) or "Child type not allowed."
-                                    st.error(
-                                        f"Can't change this asset to type '{proposed}' because it contains '{ch_name}' (type='{ch_type}'). {msg}"
-                                    )
-                                    ok = False
-                                    break
-
-                        if ok:
-                            asset["type"] = proposed
-                            st.session_state.pop(type_edit_key, None)
-                            st.session_state[toggle_key] = False
-                            _refresh_only()
+                        ensure_asset_ontology_fields(portfolio)
+                        _refresh_only()
                 with cancel_col:
-                    if st.button("Cancel", key=f"edit_type_cancel_btn::{asset_id}"):
-                        st.session_state.pop(type_edit_key, None)
-                        st.session_state[toggle_key] = False
+                    if st.button("Cancel", key=f"ont_cancel::{asset_id}"):
+                        for k in (ct_key, st_key, cr_key, loc_key, qty_key, attrs_key):
+                            st.session_state.pop(k, None)
+
+        st.markdown(f"**Carbon effect (qualitative):** {carbon_signal(asset)}")
 
         desc = safe_str(asset.get("description"))
         if desc:
@@ -820,18 +848,18 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
         _refresh_only()
 
     # --- Bottom panel: full-width recommendations ---
-    base = asset.get("llm_recommendations")
-    if isinstance(base, list):
-        recs = [r for r in base if isinstance(r, dict)]
-    else:
+    recs = extract_recommendation_items(asset)
+    if not recs:
         recs = heuristic_recommendations(asset)
 
     st.markdown("**Recommendations**")
 
+    regen_disabled = not bool(asset_id) or (not openai_client_available())
     if st.button(
         "Regenerate recommendations",
-        disabled=not bool(asset_id),
+        disabled=regen_disabled,
         key=f"regen_recs_btn::{asset_id}",
+        help=None if not regen_disabled else "Requires AI (set OPENAI_API_KEY).",
     ):
         _regenerate_recommendations_for_subtree()
 
@@ -895,17 +923,30 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
                 if not isinstance(add_asset, dict) or not safe_str(add_asset.get("name")):
                     add_asset = {
                         "name": safe_str(rec.get("title")) or "New asset",
-                        "type": "asset",
+                        "core_type": "asset",
+                        "subtype": "",
                     }
                 add_payload = dict(add_asset)
                 add_payload.setdefault("_id", uuid.uuid4().hex)
 
+                # Normalize the payload onto the ontology schema.
+                from .ontology import infer_core_type_and_subtype, normalize_core_type
+
+                if not safe_str(add_payload.get("core_type")).strip():
+                    inferred_core, inferred_sub = infer_core_type_and_subtype(legacy_type=safe_str(add_payload.get("type")))
+                    add_payload["core_type"] = inferred_core
+                    if not safe_str(add_payload.get("subtype")).strip() and inferred_sub:
+                        add_payload["subtype"] = inferred_sub
+                    else:
+                        add_payload.setdefault("subtype", safe_str(add_payload.get("subtype")).strip())
+                else:
+                    add_payload["core_type"] = normalize_core_type(safe_str(add_payload.get("core_type")))
+                    add_payload["subtype"] = safe_str(add_payload.get("subtype")).strip()
+                add_payload.pop("type", None)
+
                 # Enforce parent→child type relationships for structural adds.
                 if action == "add":
-                    disallowed = explain_disallowed_child(
-                        parent_type=safe_str(asset.get("type")),
-                        child_type=safe_str(add_payload.get("type")),
-                    )
+                    disallowed = explain_disallowed_child_assets(parent_asset=asset, child_asset=add_payload)
                     if disallowed:
                         st.warning(disallowed)
                         status["applied"] = False
@@ -913,16 +954,13 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
                         return
                 else:
                     # switch adds a sibling, so validate against the parent's type.
-                    parent_type = "asset"
+                    parent_asset: Dict[str, Any] = {"core_type": "asset", "subtype": ""}
                     here_ref = find_asset_ref(portfolio, asset_id=safe_str(asset.get("_id")))
                     if here_ref and here_ref.parent_id:
                         p_ref = find_asset_ref(portfolio, asset_id=here_ref.parent_id)
                         if p_ref and isinstance(p_ref.asset, dict):
-                            parent_type = safe_str(p_ref.asset.get("type")) or parent_type
-                    disallowed = explain_disallowed_child(
-                        parent_type=parent_type,
-                        child_type=safe_str(add_payload.get("type")),
-                    )
+                            parent_asset = p_ref.asset
+                    disallowed = explain_disallowed_child_assets(parent_asset=parent_asset, child_asset=add_payload)
                     if disallowed:
                         st.warning(disallowed)
                         status["applied"] = False
@@ -952,6 +990,7 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
                 if ok_add:
                     ensure_asset_ids(portfolio, id_key="_id")
                     ensure_asset_data_fields(portfolio)
+                    ensure_asset_ontology_fields(portfolio)
                     status["applied"] = True
                     if action == "switch":
                         st.session_state.selected_node_id = safe_str(add_payload.get("_id"))
