@@ -619,18 +619,14 @@ def require_login(*, app_name: str = "Decarbonify") -> str:
         except Exception:
             pass
 
-    if st.session_state.get(_OAUTH_REDIRECTING_KEY):
-        st.info("Redirecting to Google sign-in…")
-        escaped = auth_url.replace("'", "%27")
-        st.markdown(
-            f"<meta http-equiv='refresh' content='0; url={escaped}'>",
-            unsafe_allow_html=True,
-        )
-        st.stop()
-
-    if st.button("Sign in with Google", use_container_width=True, type="primary"):
-        st.session_state[_OAUTH_REDIRECTING_KEY] = True
-        st.rerun()
+    # Streamlit Community Cloud can be inconsistent about auto-redirects initiated via
+    # meta refresh. Prefer a direct link-button that the user can click.
+    try:
+        st.link_button("Sign in with Google", auth_url, use_container_width=True)
+        st.caption("If nothing happens, your browser may be blocking redirects — click the button again.")
+    except Exception:
+        # Fallback for older Streamlit versions.
+        st.markdown(f"[Sign in with Google]({auth_url})")
 
     # Optional hints
     if isinstance(cfg.get("allowed_domains"), list) and cfg.get("allowed_domains"):
