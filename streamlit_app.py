@@ -58,6 +58,7 @@ except Exception:  # pragma: no cover
 from decarbonify.portfolio_reorder import PortfolioReorderError, can_move_preorder, move_preorder
 from decarbonify.recommendations import openai_client_available
 from decarbonify.state_store import load_portfolio_state, save_portfolio_state
+from decarbonify.portfolio_edit import add_child_asset, explain_disallowed_child, remove_asset_snapshot
 from decarbonify.ui_asset_detail import render_asset_detail_and_recommendations
 from decarbonify.ui_chat import render_chat
 from decarbonify.ui_sidebar import inject_sidebar_nowrap_css, render_asset_hierarchy_sidebar
@@ -256,6 +257,12 @@ if (
 
 portfolio: Dict[str, Any] = st.session_state.portfolio
 
+
+def _refresh_only() -> None:
+    st.session_state.asset_tree_initialized = False
+    st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
+    st.rerun()
+
 # Ensure stable ids exist for all assets (idempotent).
 ensure_asset_ids(portfolio, id_key="_id")
 # Ensure data_fields schema exists for all assets (idempotent).
@@ -285,8 +292,6 @@ with st.sidebar:
         st.caption("AI: enabled")
     else:
         st.caption("AI: disabled (set OPENAI_API_KEY to enable)")
-
-    auth.render_logout_sidebar()
 
     tree_key = f"asset_tree_{int(st.session_state.get('asset_tree_nonce', 0))}"
 
@@ -346,6 +351,103 @@ with st.sidebar:
 
 
 selected_node = node_by_id.get(st.session_state.selected_node_id)
+
+
+with st.sidebar:
+    st.divider()
+    st.markdown("### Selected asset")
+
+    if not selected_node:
+        st.caption("Select an asset to enable actions.")
+    else:
+        asset = selected_node.data
+        asset_id = safe_str(asset.get("_id"))
+        asset_name = safe_str(asset.get("name")) or "Asset"
+
+        st.caption(asset_name)
+
+        with st.expander("Add child", expanded=False):
+            if not asset_id:
+                st.warning("This asset is missing an _id, so children can't be added here yet.")
+            else:
+                name_key = f"sb_add_child_name::{asset_id}"
+                type_key = f"sb_add_child_type::{asset_id}"
+                desc_key = f"sb_add_child_desc::{asset_id}"
+
+                child_name = st.text_input("Name", key=name_key, label_visibility="collapsed", placeholder="Name")
+                child_type = st.text_input("Type", value="asset", key=type_key, label_visibility="collapsed", placeholder="Type")
+                child_desc = st.text_input(
+                    "Description (optional)",
+                    key=desc_key,
+                    label_visibility="collapsed",
+                    placeholder="Description (optional)",
+                )
+
+                if st.button(
+                    "Add",
+                    disabled=not (child_name or "").strip(),
+                    key=f"sb_add_child_btn::{asset_id}",
+                ):
+                    new_asset: Dict[str, Any] = {
+                        "name": (child_name or "").strip(),
+                        "type": (child_type or "asset").strip() or "asset",
+                    }
+                    if (child_desc or "").strip():
+                        new_asset["description"] = child_desc.strip()
+
+                    disallowed = explain_disallowed_child(
+                        parent_type=safe_str(asset.get("type")),
+                        child_type=safe_str(new_asset.get("type")),
+                    )
+                    if disallowed:
+                        st.error(disallowed)
+                    else:
+                        ok_add = add_child_asset(portfolio, parent_id=asset_id, child_asset=new_asset)
+                        if not ok_add:
+                            st.error("Couldn't add the child asset.")
+                        else:
+                            ensure_asset_ids(portfolio, id_key="_id")
+                            ensure_asset_data_fields(portfolio)
+                            for k in (name_key, type_key, desc_key):
+                                st.session_state.pop(k, None)
+                            _refresh_only()
+
+        with st.expander("Delete", expanded=False):
+            if not asset_id:
+                st.warning("This asset is missing an _id, so it can't be deleted safely.")
+            else:
+                confirm_key = f"sb_delete_confirm::{asset_id}"
+                confirmed = bool(
+                    st.checkbox(
+                        "Confirm delete",
+                        key=confirm_key,
+                        help="This cannot be undone.",
+                    )
+                )
+                if st.button(
+                    "Delete",
+                    type="primary",
+                    disabled=not confirmed,
+                    key=f"sb_delete_btn::{asset_id}",
+                ):
+                    snap = remove_asset_snapshot(portfolio, asset_id=asset_id)
+                    if not snap:
+                        st.error("Couldn't delete the asset (not found).")
+                    else:
+                        st.session_state.selected_node_id = safe_str(snap.parent_id) or ""
+                        st.session_state.pop(confirm_key, None)
+                        _refresh_only()
+
+    st.divider()
+    # Bottom area: signed-in info + logout
+    email = auth.current_user()
+    if email:
+        profile = auth.current_user_profile() or {}
+        display = safe_str(profile.get("name")) or email
+        st.caption(f"Signed in as: {display}")
+        if st.button("Logout"):
+            auth.logout()
+            st.rerun()
 
 main_left, main_right = st.columns([0.72, 0.28], gap="large")
 

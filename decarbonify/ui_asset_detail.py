@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import uuid
 from typing import Any, Dict, List
@@ -81,7 +82,63 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
     asset_id = safe_str(asset.get("_id"))
 
     asset_name = safe_str(asset.get("name")) or "Asset"
-    st.subheader(asset_name)
+
+    st.markdown(
+        """
+<style>
+/* Keep the asset title/type on one line so the ✎ doesn't wrap underneath. */
+.dc-asset-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 0; }
+.dc-asset-type { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+</style>
+""",
+        unsafe_allow_html=True,
+    )
+    name_line, name_edit = st.columns([0.92, 0.08], gap="small")
+    with name_line:
+        st.markdown(f"<h2 class='dc-asset-title'>{html.escape(asset_name)}</h2>", unsafe_allow_html=True)
+    with name_edit:
+        rename_toggle_key = f"name_editor_open::{asset_id or selected_node.node_id}"
+        if rename_toggle_key not in st.session_state:
+            st.session_state[rename_toggle_key] = False
+        if st.button(
+            "✎",
+            key=f"name_edit_btn::{asset_id or selected_node.node_id}",
+            help="Rename asset",
+            disabled=not bool(asset_id),
+        ):
+            st.session_state[rename_toggle_key] = not bool(st.session_state.get(rename_toggle_key))
+
+    if bool(st.session_state.get(f"name_editor_open::{asset_id or selected_node.node_id}")):
+        if not asset_id:
+            st.warning("This asset is missing an _id, so it can't be renamed safely.")
+        else:
+            rename_key = f"rename_name::{asset_id}"
+            new_name = st.text_input(
+                "New name",
+                value=safe_str(asset.get("name")),
+                key=rename_key,
+                label_visibility="collapsed",
+                placeholder="New name",
+            )
+
+            save_col, cancel_col = st.columns([0.20, 0.20], gap="small")
+            with save_col:
+                if st.button(
+                    "Save",
+                    type="primary",
+                    disabled=not (new_name or "").strip(),
+                    key=f"rename_save_btn::{asset_id}",
+                ):
+                    asset["name"] = (new_name or "").strip()
+                    st.session_state.pop(rename_key, None)
+                    st.session_state[rename_toggle_key] = False
+                    st.session_state.asset_tree_initialized = False
+                    st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
+                    st.rerun()
+            with cancel_col:
+                if st.button("Cancel", key=f"rename_cancel_btn::{asset_id}"):
+                    st.session_state.pop(rename_key, None)
+                    st.session_state[rename_toggle_key] = False
 
     def _regenerate_recommendations_for_subtree() -> None:
         if not asset_id:
@@ -256,8 +313,82 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
 
     with left_panel:
         st.markdown(f"**Path:** {selected_node.path}")
-        st.markdown(f"**Type:** {selected_node.type}")
+        type_line, type_edit = st.columns([0.92, 0.08], gap="small")
+        with type_line:
+            st.markdown(
+                f"<div class='dc-asset-type'><strong>Type:</strong> {html.escape(str(selected_node.type))}</div>",
+                unsafe_allow_html=True,
+            )
+        with type_edit:
+            toggle_key = f"type_editor_open::{asset_id or selected_node.node_id}"
+            if toggle_key not in st.session_state:
+                st.session_state[toggle_key] = False
+            if st.button("✎", key=f"type_edit_btn::{asset_id or selected_node.node_id}", help="Edit type"):
+                st.session_state[toggle_key] = not bool(st.session_state.get(toggle_key))
         st.markdown(f"**Carbon effect (qualitative):** {carbon_signal(asset)}")
+
+        if bool(st.session_state.get(f"type_editor_open::{asset_id or selected_node.node_id}")):
+            if not asset_id:
+                st.warning("This asset is missing an _id, so it can't be edited safely.")
+            else:
+                type_edit_key = f"edit_type::{asset_id}"
+                proposed_raw = st.text_input(
+                    "Type",
+                    value=safe_str(asset.get("type")) or "asset",
+                    key=type_edit_key,
+                    label_visibility="collapsed",
+                    placeholder="Type",
+                )
+                save_col, cancel_col = st.columns([0.20, 0.20], gap="small")
+                with save_col:
+                    if st.button(
+                        "Save",
+                        type="primary",
+                        disabled=not (proposed_raw or "").strip(),
+                        key=f"edit_type_save_btn::{asset_id}",
+                    ):
+                        proposed = normalize_asset_type(proposed_raw)
+
+                        ok = True
+
+                        # Validate against parent relationship (if any).
+                        here_ref = find_asset_ref(portfolio, asset_id=asset_id)
+                        parent_type = "asset"
+                        if here_ref and here_ref.parent_id:
+                            p_ref = find_asset_ref(portfolio, asset_id=here_ref.parent_id)
+                            if p_ref and isinstance(p_ref.asset, dict):
+                                parent_type = safe_str(p_ref.asset.get("type")) or parent_type
+                            if not can_add_child_type(parent_type=parent_type, child_type=proposed):
+                                st.error(
+                                    explain_disallowed_child(parent_type=parent_type, child_type=proposed)
+                                    or "Type not allowed here."
+                                )
+                                ok = False
+
+                        # Validate that the proposed type can contain existing children.
+                        if ok:
+                            for ch in as_list(asset.get("assets")):
+                                if not isinstance(ch, dict):
+                                    continue
+                                ch_type = safe_str(ch.get("type")) or "asset"
+                                if not can_add_child_type(parent_type=proposed, child_type=ch_type):
+                                    ch_name = safe_str(ch.get("name")) or "child asset"
+                                    msg = explain_disallowed_child(parent_type=proposed, child_type=ch_type) or "Child type not allowed."
+                                    st.error(
+                                        f"Can't change this asset to type '{proposed}' because it contains '{ch_name}' (type='{ch_type}'). {msg}"
+                                    )
+                                    ok = False
+                                    break
+
+                        if ok:
+                            asset["type"] = proposed
+                            st.session_state.pop(type_edit_key, None)
+                            st.session_state[toggle_key] = False
+                            _refresh_only()
+                with cancel_col:
+                    if st.button("Cancel", key=f"edit_type_cancel_btn::{asset_id}"):
+                        st.session_state.pop(type_edit_key, None)
+                        st.session_state[toggle_key] = False
 
         desc = safe_str(asset.get("description"))
         if desc:
@@ -284,143 +415,6 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
             st.metric("Potential gains (t/year)", f"{possible_s:.2f}")
         with g2:
             st.metric("Actualised gains (t/year)", f"{done_s:.2f}")
-
-        with st.expander("Add child asset", expanded=False):
-            if not asset_id:
-                st.warning("This asset is missing an _id, so children can't be added here yet.")
-            else:
-                name_key = f"add_child_name::{asset_id}"
-                type_key = f"add_child_type::{asset_id}"
-                desc_key = f"add_child_desc::{asset_id}"
-
-                child_name = st.text_input("Name", key=name_key)
-                child_type = st.text_input("Type", value="asset", key=type_key)
-                child_desc = st.text_input("Description (optional)", key=desc_key)
-
-                if st.button(
-                    "Add child",
-                    type="primary",
-                    disabled=not (child_name or "").strip(),
-                    key=f"add_child_btn::{asset_id}",
-                ):
-                    new_asset: Dict[str, Any] = {
-                        "name": (child_name or "").strip(),
-                        "type": (child_type or "asset").strip() or "asset",
-                    }
-                    if (child_desc or "").strip():
-                        new_asset["description"] = child_desc.strip()
-
-                    disallowed = explain_disallowed_child(
-                        parent_type=safe_str(asset.get("type")),
-                        child_type=safe_str(new_asset.get("type")),
-                    )
-                    if disallowed:
-                        st.error(disallowed)
-                    else:
-                        ok_add = add_child_asset(
-                            portfolio,
-                            parent_id=asset_id,
-                            child_asset=new_asset,
-                        )
-                        if not ok_add:
-                            st.error("Couldn't add the child asset.")
-                        else:
-                            ensure_asset_ids(portfolio, id_key="_id")
-                            ensure_asset_data_fields(portfolio)
-                            for k in (name_key, type_key, desc_key):
-                                st.session_state.pop(k, None)
-                            _refresh_only()
-
-        with st.expander("Rename asset", expanded=False):
-            if not asset_id:
-                st.warning("This asset is missing an _id, so it can't be renamed safely.")
-            else:
-                rename_key = f"rename_name::{asset_id}"
-                new_name = st.text_input("New name", value=safe_str(asset.get("name")), key=rename_key)
-                if st.button(
-                    "Rename",
-                    type="primary",
-                    disabled=not (new_name or "").strip(),
-                    key=f"rename_btn::{asset_id}",
-                ):
-                    asset["name"] = (new_name or "").strip()
-                    st.session_state.pop(rename_key, None)
-                    _refresh_only()
-
-        with st.expander("Edit asset type", expanded=False):
-            st.caption("Changing type is validated against the parent and existing children.")
-            if not asset_id:
-                st.warning("This asset is missing an _id, so it can't be edited safely.")
-            else:
-                type_edit_key = f"edit_type::{asset_id}"
-                proposed_raw = st.text_input(
-                    "Type",
-                    value=safe_str(asset.get("type")) or "asset",
-                    key=type_edit_key,
-                )
-                if st.button(
-                    "Update type",
-                    type="primary",
-                    disabled=not (proposed_raw or "").strip(),
-                    key=f"edit_type_btn::{asset_id}",
-                ):
-                    proposed = normalize_asset_type(proposed_raw)
-
-                    ok = True
-
-                    # Validate against parent relationship (if any).
-                    here_ref = find_asset_ref(portfolio, asset_id=asset_id)
-                    parent_type = "asset"
-                    if here_ref and here_ref.parent_id:
-                        p_ref = find_asset_ref(portfolio, asset_id=here_ref.parent_id)
-                        if p_ref and isinstance(p_ref.asset, dict):
-                            parent_type = safe_str(p_ref.asset.get("type")) or parent_type
-                        if not can_add_child_type(parent_type=parent_type, child_type=proposed):
-                            st.error(explain_disallowed_child(parent_type=parent_type, child_type=proposed) or "Type not allowed here.")
-                            ok = False
-
-                    # Validate that the proposed type can contain existing children.
-                    if ok:
-                        for ch in as_list(asset.get("assets")):
-                            if not isinstance(ch, dict):
-                                continue
-                            ch_type = safe_str(ch.get("type")) or "asset"
-                            if not can_add_child_type(parent_type=proposed, child_type=ch_type):
-                                ch_name = safe_str(ch.get("name")) or "child asset"
-                                msg = explain_disallowed_child(parent_type=proposed, child_type=ch_type) or "Child type not allowed."
-                                st.error(
-                                    f"Can't change this asset to type '{proposed}' because it contains '{ch_name}' (type='{ch_type}'). {msg}"
-                                )
-                                ok = False
-                                break
-
-                    if ok:
-                        asset["type"] = proposed
-                        st.session_state.pop(type_edit_key, None)
-                        _refresh_only()
-
-        with st.expander("Delete asset", expanded=False):
-            st.caption("Deletes this asset and all of its children.")
-            if not asset_id:
-                st.warning("This asset is missing an _id, so it can't be deleted safely.")
-            else:
-                confirm_key = f"delete_confirm::{asset_id}"
-                confirmed = bool(st.checkbox("I understand this cannot be undone", key=confirm_key))
-                if st.button(
-                    "Delete asset",
-                    type="primary",
-                    disabled=not confirmed,
-                    key=f"delete_btn::{asset_id}",
-                ):
-                    snap = remove_asset_snapshot(portfolio, asset_id=asset_id)
-                    if not snap:
-                        st.error("Couldn't delete the asset (not found).")
-                    else:
-                        # After deletion, select parent (or first node on next run).
-                        st.session_state.selected_node_id = safe_str(snap.parent_id) or ""
-                        st.session_state.pop(confirm_key, None)
-                        _refresh_only()
-
     with right_panel:
         st.markdown("**Data**")
 
