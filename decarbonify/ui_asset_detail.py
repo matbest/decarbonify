@@ -77,33 +77,29 @@ from .recommendations import (
 
 
 def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], selected_node: AssetNode) -> None:
-    st.subheader("Asset Detail")
-
     asset = selected_node.data
     asset_id = safe_str(asset.get("_id"))
 
-    top_left, top_right = st.columns([0.70, 0.30], gap="small")
-    with top_left:
-        st.caption("Regenerates recommendations for this asset and its children. Done items stay visible.")
-    with top_right:
-        if st.button(
-            "Regenerate recommendations",
-            use_container_width=True,
-            disabled=not bool(asset_id),
-            key=f"regen_recs_btn::{asset_id}",
-        ):
-            if not openai_client_available():
-                st.warning("AI is disabled (missing OPENAI_API_KEY).")
-            else:
-                with st.spinner("Regenerating recommendations..."):
-                    for a in iter_asset_and_descendants(asset):
-                        if not isinstance(a, dict):
-                            continue
-                        a["llm_recommendations"] = llm_recommendations(portfolio, a)
-                # Refresh the tree/UI without autosaving.
-                st.session_state.asset_tree_initialized = False
-                st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
-                st.rerun()
+    asset_name = safe_str(asset.get("name")) or "Asset"
+    st.subheader(asset_name)
+
+    def _regenerate_recommendations_for_subtree() -> None:
+        if not asset_id:
+            return
+        if not openai_client_available():
+            st.warning("AI is disabled (missing OPENAI_API_KEY).")
+            return
+
+        with st.spinner("Regenerating recommendations..."):
+            for a in iter_asset_and_descendants(asset):
+                if not isinstance(a, dict):
+                    continue
+                a["llm_recommendations"] = llm_recommendations(portfolio, a)
+
+        # Refresh the tree/UI without autosaving.
+        st.session_state.asset_tree_initialized = False
+        st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
+        st.rerun()
 
     def _asset_fields() -> Dict[str, Any]:
         fields = asset.get(DATA_FIELDS_KEY)
@@ -427,7 +423,6 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
 
     with right_panel:
         st.markdown("**Data**")
-        st.caption("Manual values override derived values.")
 
         with st.expander("AI: emissions estimate", expanded=False):
             st.caption("AI can ask for the specific inputs it needs for this asset, then estimate annual tCO2e (positive=emits, negative=sequesters).")
@@ -838,6 +833,14 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
         recs = heuristic_recommendations(asset)
 
     st.markdown("**Recommendations**")
+
+    if st.button(
+        "Regenerate recommendations",
+        disabled=not bool(asset_id),
+        key=f"regen_recs_btn::{asset_id}",
+    ):
+        _regenerate_recommendations_for_subtree()
+
     if not recs:
         st.write("No recommendations for this asset.")
         return
@@ -1010,21 +1013,6 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
             pass
 
     with recs_box:
-        # Table header
-        h1, h2, h3, h4, h5, h6 = st.columns([0.18, 0.40, 0.13, 0.09, 0.10, 0.10], gap="small")
-        with h1:
-            st.caption("Name")
-        with h2:
-            st.caption("Description")
-        with h3:
-            st.caption("Saving")
-        with h4:
-            st.caption("Type")
-        with h5:
-            st.caption("Ignore")
-        with h6:
-            st.caption("Actions")
-
         status_map = _rec_status_map()
         asset_id = safe_str(asset.get("_id"))
 
@@ -1056,6 +1044,20 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
                         "add_asset": st0.get("add_asset") if isinstance(st0.get("add_asset"), dict) else None,
                     }
                 )
+
+        # Table header
+        h1, h2, h3, h4, h5 = st.columns([0.56, 0.12, 0.10, 0.11, 0.11], gap="small")
+        with h1:
+            st.caption("Recommendation")
+        with h2:
+            st.caption("Type")
+        with h3:
+            st.caption("Saving")
+        with h4:
+            st.caption("Ignore")
+        with h5:
+            st.caption("Done")
+
         for r in recs:
             rid = safe_str(r.get("__rid")) or recommendation_id(r)
             status = status_map.get(rid) if isinstance(status_map.get(rid), dict) else {}
@@ -1070,16 +1072,16 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
             done_key = f"rec_done_{asset_id}_{rid}"
             ignore_key = f"rec_ignore_{asset_id}_{rid}"
 
-            c1, c2, c3, c4, c5, c6 = st.columns([0.18, 0.40, 0.13, 0.09, 0.10, 0.10], gap="small")
+            c1, c2, c3, c4, c5 = st.columns([0.56, 0.12, 0.10, 0.11, 0.11], gap="small")
             with c1:
-                st.write(title)
+                st.markdown(f"**{title}**")
+                if desc:
+                    st.caption(desc)
             with c2:
-                st.caption(desc)
+                st.write(action)
             with c3:
                 st.write(f"{saving:.2f}")
             with c4:
-                st.write(action)
-            with c5:
                 st.checkbox(
                     "Ignore",
                     value=bool(status.get("ignored")),
@@ -1088,24 +1090,24 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
                     on_change=_apply_rec_ignore,
                     kwargs={"rec": r, "rec_key": rid},
                 )
-            with c6:
-                b_left, b_right = st.columns([0.55, 0.45], gap="small")
-                with b_left:
-                    st.checkbox(
-                        "Done",
-                        value=bool(status.get("done")),
-                        key=done_key,
-                        label_visibility="collapsed",
-                        on_change=_apply_rec_action,
+            with c5:
+                st.checkbox(
+                    "Done",
+                    value=bool(status.get("done")),
+                    key=done_key,
+                    label_visibility="collapsed",
+                    on_change=_apply_rec_action,
+                    kwargs={"rec": r, "rec_key": rid},
+                )
+
+                if bool(status.get("done")) or bool(status.get("applied")):
+                    st.button(
+                        "Bin",
+                        key=f"rec_bin_{asset_id}_{rid}",
+                        help="Delete this saved saving (clears Done and undoes applied changes if any).",
+                        on_click=_delete_rec_saving,
                         kwargs={"rec": r, "rec_key": rid},
+                        use_container_width=True,
                     )
-                with b_right:
-                    if bool(status.get("done")) or bool(status.get("applied")):
-                        st.button(
-                            "Bin",
-                            key=f"rec_bin_{asset_id}_{rid}",
-                            help="Delete this saved saving (clears Done and undoes applied changes if any).",
-                            on_click=_delete_rec_saving,
-                            kwargs={"rec": r, "rec_key": rid},
-                            use_container_width=True,
-                        )
+
+            st.divider()

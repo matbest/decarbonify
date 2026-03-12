@@ -20,7 +20,7 @@ def render_chat(*, portfolio: Dict[str, Any], nodes: List[AssetNode], selected_n
     mode = st.radio(
         "Mode",
         ["Ask", "Edit selected subtree"],
-        horizontal=True,
+        horizontal=False,
         label_visibility="collapsed",
         key="chat_mode",
     )

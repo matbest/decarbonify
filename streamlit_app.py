@@ -160,7 +160,7 @@ def _load_default_portfolio() -> Dict[str, Any]:
     }
 
 
-st.set_page_config(layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(layout="wide", initial_sidebar_state="collapsed")
 inject_sidebar_nowrap_css()
 _configure_openai_env_from_streamlit_secrets()
 
@@ -169,6 +169,18 @@ st.markdown(
     """
 <style>
 div.block-container { padding-top: 0.75rem; padding-bottom: 1rem; }
+
+/* Mobile: a bit tighter padding and let sidebar labels wrap */
+@media (max-width: 768px) {
+  div.block-container { padding-left: 0.75rem; padding-right: 0.75rem; }
+  section[data-testid="stSidebar"] .stRadio [role="radiogroup"] label,
+  section[data-testid="stSidebar"] .stRadio [role="radiogroup"] label p,
+  section[data-testid="stSidebar"] .stRadio [role="radiogroup"] label div {
+      white-space: normal;
+      overflow: visible;
+      text-overflow: clip;
+  }
+}
 </style>
 """,
     unsafe_allow_html=True,
