@@ -2,6 +2,12 @@
   "id": "gas_boiler",
   "label": "Gas boiler",
   "description": "Combustion boiler using mains gas. Computes annual tCO2e from gas energy use.",
+  "core_type": "energy_system",
+  "subtype": "boiler",
+  "current_role": "consumer",
+  "attributes": {
+    "energy_type": "gas"
+  },
   "inputs": [
     {
       "key": "annual_gas_kwh",

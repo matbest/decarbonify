@@ -1,0 +1,40 @@
+{
+  "id": "land_woodland",
+  "label": "Land (woodland)",
+  "description": "Generic woodland sequestration/removals. Provide an area and an annual net removals rate. Produces negative emissions when removals are positive.",
+  "core_type": "place",
+  "subtype": "woodland",
+  "current_role": "passive",
+  "inputs": [
+    {
+      "key": "area_ha",
+      "label": "Area",
+      "kind": "number",
+      "unit": "ha",
+      "help": "Area of woodland in hectares. (1 ha = 10,000 m²)"
+    },
+    {
+      "key": "net_removals_tco2e_per_ha_per_year",
+      "label": "Net removals rate",
+      "kind": "number",
+      "unit": "tCO2e/ha/year",
+      "help": "Net annual removals (positive) or emissions (negative) per hectare per year. Use your chosen factor/source."
+    }
+  ],
+  "outputs": [
+    {
+      "key": "net_removals_tco2e_per_year",
+      "label": "Net removals",
+      "kind": "number",
+      "unit": "tCO2e/year",
+      "formula": "area_ha * net_removals_tco2e_per_ha_per_year"
+    },
+    {
+      "key": "emissions_tco2e_per_year",
+      "label": "Net emissions (negative means removals)",
+      "kind": "number",
+      "unit": "tCO2e/year",
+      "formula": "-(area_ha * net_removals_tco2e_per_ha_per_year)"
+    }
+  ]
+}

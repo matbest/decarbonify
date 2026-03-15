@@ -2,6 +2,12 @@
   "id": "solar_pv",
   "label": "Solar PV",
   "description": "Solar PV system. Computes avoided emissions (negative tCO2e/year) from annual generation.",
+  "core_type": "energy_system",
+  "subtype": "solar_pv",
+  "current_role": "producer",
+  "attributes": {
+    "energy_type": "electricity"
+  },
   "inputs": [
     {
       "key": "annual_generation_kwh",

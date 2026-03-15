@@ -1,0 +1,37 @@
+{
+  "id": "kitchen_equipment_gas",
+  "label": "Kitchen equipment (gas)",
+  "description": "Generic gas kitchen equipment. Enter annual gas energy use to compute tCO2e/year using the portfolio gas emissions factor.",
+  "core_type": "asset",
+  "subtype": "kitchen_equipment",
+  "current_role": "consumer",
+  "attributes": {
+    "energy_type": "gas"
+  },
+  "inputs": [
+    {
+      "key": "annual_gas_kwh",
+      "label": "Annual gas energy use",
+      "kind": "number",
+      "unit": "kWh/year",
+      "help": "Enter the estimated annual gas energy use for this equipment (or group of equipment)."
+    },
+    {
+      "key": "gas_kgco2e_per_kwh",
+      "label": "Gas emissions factor",
+      "kind": "number",
+      "unit": "kgCO2e/kWh",
+      "default": 0.184,
+      "help": "Emissions factor used to convert kWh into emissions. If the portfolio has a default for this, it will be used instead."
+    }
+  ],
+  "outputs": [
+    {
+      "key": "emissions_tco2e_per_year",
+      "label": "Emissions",
+      "kind": "number",
+      "unit": "tCO2e/year",
+      "formula": "(annual_gas_kwh * gas_kgco2e_per_kwh) / 1000"
+    }
+  ]
+}

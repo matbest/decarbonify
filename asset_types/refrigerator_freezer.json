@@ -14,6 +14,12 @@
   "outputs": [
     {
       "key": "emissions_tco2e_per_year",
+    "core_type": "asset",
+    "subtype": "refrigerator_freezer",
+    "current_role": "consumer",
+    "attributes": {
+      "energy_type": "electricity"
+    },
       "label": "Emissions",
       "kind": "number",
       "unit": "tCO2e/year",

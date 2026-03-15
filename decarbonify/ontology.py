@@ -74,7 +74,10 @@ def infer_core_type_and_subtype(*, legacy_type: str) -> Tuple[str, str]:
         "place",
         "land",
         "building",
+        "floor",
+        "office",
         "room",
+        "hall",
         "area",
         "site",
         "warehouse",
@@ -136,6 +139,10 @@ def infer_current_role(*, core_type: str, subtype: str) -> Optional[str]:
     if ct == "resource":
         return "transport"
     if ct == "energy_system":
+        # Boilers consume a fuel (or electricity) to produce heat; they are not converters
+        # in the sense of a grid transformer/inverter.
+        if "boiler" in st:
+            return "consumer"
         if "battery" in st or "storage" in st:
             return "storage"
         if "inverter" in st or "transformer" in st:
@@ -144,6 +151,10 @@ def infer_current_role(*, core_type: str, subtype: str) -> Optional[str]:
             return "producer"
         return None
     if ct == "asset":
+        # Some equipment is clearly an energy consumer even if it's not modeled as an energy_system.
+        # Keep this tight to avoid surprising classifications.
+        if any(tok in st for tok in {"fridge", "freezer", "refrigerator"}):
+            return "consumer"
         return None
     if ct == "activity":
         return None
@@ -216,7 +227,7 @@ def hierarchy_category(asset: Dict[str, Any]) -> str:
             return "land"
         if st in {"building", "warehouse"}:
             return "building"
-        if st in {"room", "kitchen", "dining_area"}:
+        if st in {"room", "kitchen", "dining_area", "hall", "office", "floor"}:
             return "room"
         return "place"
 

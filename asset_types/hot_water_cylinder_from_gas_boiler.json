@@ -13,6 +13,12 @@
     {
       "key": "boiler_efficiency",
       "label": "Boiler efficiency",
+      "core_type": "energy_system",
+      "subtype": "hot_water_cylinder",
+      "current_role": "storage",
+      "attributes": {
+        "energy_type": "heat"
+      },
       "kind": "number",
       "unit": "fraction",
       "default": 0.85,

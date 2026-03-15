@@ -1,0 +1,13 @@
+{
+  "id": "place_toilet",
+  "label": "Toilet",
+  "description": "A toilet / WC within a building.",
+  "core_type": "place",
+  "subtype": "toilet",
+  "current_role": "",
+  "attributes": {
+    "energy_type": "electricity"
+  },
+  "inputs": [],
+  "outputs": []
+}

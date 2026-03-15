@@ -13,6 +13,12 @@
     {
       "key": "roundtrip_efficiency",
       "label": "Round-trip efficiency",
+      "core_type": "energy_system",
+      "subtype": "battery",
+      "current_role": "storage",
+      "attributes": {
+        "energy_type": "electricity"
+      },
       "kind": "number",
       "unit": "fraction",
       "default": 0.90,

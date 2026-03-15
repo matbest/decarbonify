@@ -1,0 +1,37 @@
+{
+  "id": "kitchen_equipment_electric",
+  "label": "Kitchen equipment (electric)",
+  "description": "Generic electric kitchen equipment. Enter annual electricity use to compute tCO2e/year using the portfolio electricity carbon intensity.",
+  "core_type": "asset",
+  "subtype": "kitchen_equipment",
+  "current_role": "consumer",
+  "attributes": {
+    "energy_type": "electricity"
+  },
+  "inputs": [
+    {
+      "key": "annual_electricity_kwh",
+      "label": "Annual electricity use",
+      "kind": "number",
+      "unit": "kWh/year",
+      "help": "Enter the estimated annual electricity consumption for this equipment (or group of equipment)."
+    },
+    {
+      "key": "carbon_intensity_of_electricity",
+      "label": "Electricity carbon intensity",
+      "kind": "number",
+      "unit": "kgCO2e/kWh",
+      "default": 0.20,
+      "help": "Grid carbon intensity used to convert kWh into emissions. If the portfolio has a default for this, it will be used instead."
+    }
+  ],
+  "outputs": [
+    {
+      "key": "emissions_tco2e_per_year",
+      "label": "Emissions",
+      "kind": "number",
+      "unit": "tCO2e/year",
+      "formula": "(annual_electricity_kwh * carbon_intensity_of_electricity) / 1000"
+    }
+  ]
+}

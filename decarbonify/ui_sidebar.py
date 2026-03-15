@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 import streamlit as st
 
 from .emissions import is_retired
-from .ontology import display_kind
+from .ontology import display_kind, normalize_core_type, normalize_energy_role
 from .portfolio_index import AssetNode
 from .portfolio_io import as_list, safe_str
 from .recommendations import heuristic_recommendations, recommendation_id
@@ -31,14 +31,140 @@ def _strike(text: str) -> str:
     s = safe_str(text)
     if not s:
         return s
+
+    # If the string begins with an icon prefix (e.g. "⚡ "), don't strike the icon.
+    prefix = ""
+    rest = s
+    first_space = s.find(" ")
+    if 0 < first_space <= 6:
+        # Heuristic: treat the first token as an icon prefix.
+        token = s[:first_space]
+        if any(ord(ch) > 127 for ch in token):
+            prefix = s[: first_space + 1]
+            rest = s[first_space + 1 :]
+
     overlay = "\u0336"
     out = []
-    for ch in s:
+    for ch in rest:
         if ch.isspace():
             out.append(ch)
         else:
             out.append(ch + overlay)
-    return "".join(out)
+    return prefix + "".join(out)
+
+
+def _italic(text: str) -> str:
+    """Best-effort italic using Unicode Mathematical Italic letters.
+
+    Streamlit widgets used in the sidebar (Arborist node names, radio fallback)
+    don't render markdown/HTML italics, so we transform ASCII letters instead.
+    """
+
+    s = safe_str(text)
+    if not s:
+        return s
+
+    # Preserve an icon prefix like "⚡ ".
+    prefix = ""
+    rest = s
+    first_space = s.find(" ")
+    if 0 < first_space <= 6:
+        token = s[:first_space]
+        if any(ord(ch) > 127 for ch in token):
+            prefix = s[: first_space + 1]
+            rest = s[first_space + 1 :]
+
+    def italic_char(ch: str) -> str:
+        o = ord(ch)
+        # A-Z => U+1D434..U+1D44D
+        if 65 <= o <= 90:
+            return chr(0x1D434 + (o - 65))
+        # a-z => U+1D44E..U+1D467
+        if 97 <= o <= 122:
+            return chr(0x1D44E + (o - 97))
+        return ch
+
+    return prefix + "".join(italic_char(ch) for ch in rest)
+
+
+def _fallback_core_type_icon(asset: Dict[str, Any]) -> str:
+    ct = normalize_core_type(safe_str(asset.get("core_type")) or "asset")
+    stype = safe_str(asset.get("subtype")).strip().lower().replace(" ", "_")
+
+    # Special-case place subtypes for clearer hierarchy scanning.
+    if ct == "place":
+        if stype in {"site", "farm", "campus"}:
+            return "🗺️"
+        if stype in {"building", "warehouse"}:
+            return "🏢"
+    return {
+        "place": "📍",
+        "activity": "📝",
+        "asset": "📦",
+        "energy_system": "⚡",
+        "resource": "🧪",
+        "surface": "🧱",
+    }.get(ct, "📦")
+
+
+def _infer_energy_carrier(asset: Dict[str, Any]) -> str:
+    """Best-effort inference for the energy carrier/source/output.
+
+    Returns one of: electricity | gas | heat | oil | ""
+    """
+
+    attrs = asset.get("attributes")
+    parts: List[str] = []
+    if isinstance(attrs, dict):
+        for k in ("energy_type", "fuel", "carrier", "emissions_type", "source", "sink", "technology"):
+            v = attrs.get(k)
+            if v is not None:
+                parts.append(safe_str(v))
+
+    for k in ("asset_type_id", "subtype", "name", "description"):
+        v = asset.get(k)
+        if v is not None:
+            parts.append(safe_str(v))
+
+    s = " ".join(p for p in parts if safe_str(p).strip()).strip().lower().replace("-", "_")
+
+    if any(tok in s for tok in ["electricity", "electric", "grid", "solar_pv", "pv", "kwh"]):
+        return "electricity"
+    if "gas" in s:
+        return "gas"
+    if any(tok in s for tok in ["heating_oil", "oil", "diesel", "petrol", "kerosene"]):
+        return "oil"
+    if any(tok in s for tok in ["heat", "thermal", "hot_water", "hot water", "solar_thermal", "solar water"]):
+        return "heat"
+    return ""
+
+
+def _node_icon(asset: Dict[str, Any]) -> str:
+    """Pick an icon for the node.
+
+    Spec:
+      - consumer of electricity -> plug
+      - consumer of gas -> oil barrel
+      - producer of electricity -> lightning bolt
+      - producer of heat -> hot springs
+    """
+
+    role = normalize_energy_role(safe_str(asset.get("current_role")))
+    carrier = _infer_energy_carrier(asset)
+
+    if role == "consumer":
+        if carrier == "electricity":
+            return "🔌"
+        if carrier in {"gas", "oil"}:
+            return "🛢️"
+
+    if role == "producer":
+        if carrier == "electricity":
+            return "⚡"
+        if carrier == "heat":
+            return "♨️"
+
+    return _fallback_core_type_icon(asset)
 
 
 def _asset_savings_tco2_per_year(asset: Dict[str, Any]) -> Tuple[float, float]:
@@ -121,10 +247,14 @@ def _build_arborist_tree_data(
         if not isinstance(asset, dict):
             continue
         name = safe_str(asset.get("name", f"Unnamed {idx}"))
-        kind = display_kind(asset)
+        icon = _node_icon(asset)
+        subtype = safe_str(asset.get("subtype")).strip()
+        kind = subtype
         node_id = safe_str(asset.get(id_key))
 
-        base_label = f"{name} ({kind})"
+        base_label = f"{icon} {name}" + (f" ({kind})" if kind else "")
+        if not safe_str(asset.get("asset_type_id")).strip():
+            base_label = _italic(base_label)
         if is_retired(asset):
             base_label = _strike(base_label)
         suffix = _format_subtree_suffix(node_id, subtree_totals=subtree_totals)
@@ -228,9 +358,31 @@ def render_asset_hierarchy_sidebar(
             n.node_id: ("   " * n.depth)
             + _truncate_one_line(
                 (
-                    _strike(f"{n.name} ({n.kind})")
-                    if is_retired(n.data)
-                    else f"{n.name} ({n.kind})"
+                    (
+                        _strike(
+                            _italic(
+                                f"{_node_icon(n.data)} {n.name}"
+                                + (f" ({safe_str(n.data.get('subtype')).strip()})" if safe_str(n.data.get("subtype")).strip() else "")
+                            )
+                            if not safe_str(n.data.get("asset_type_id")).strip()
+                            else (
+                                f"{_node_icon(n.data)} {n.name}"
+                                + (f" ({safe_str(n.data.get('subtype')).strip()})" if safe_str(n.data.get("subtype")).strip() else "")
+                            )
+                        )
+                        if is_retired(n.data)
+                        else (
+                            _italic(
+                                f"{_node_icon(n.data)} {n.name}"
+                                + (f" ({safe_str(n.data.get('subtype')).strip()})" if safe_str(n.data.get("subtype")).strip() else "")
+                            )
+                            if not safe_str(n.data.get("asset_type_id")).strip()
+                            else (
+                                f"{_node_icon(n.data)} {n.name}"
+                                + (f" ({safe_str(n.data.get('subtype')).strip()})" if safe_str(n.data.get("subtype")).strip() else "")
+                            )
+                        )
+                    )
                 )
                 + _format_subtree_suffix(n.node_id, subtree_totals=subtree_totals),
                 max_chars=55,

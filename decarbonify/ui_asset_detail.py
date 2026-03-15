@@ -323,9 +323,30 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
     with left_panel:
         st.markdown(f"**Path:** {selected_node.path}")
 
-        core_type = safe_str(asset.get("core_type"))
-        subtype = safe_str(asset.get("subtype"))
-        current_role = safe_str(asset.get("current_role"))
+        active_type_id_for_header = safe_str(asset.get("asset_type_id")).strip()
+        type_label_for_header = ""
+        core_type = ""
+        subtype = ""
+        current_role = ""
+        if active_type_id_for_header:
+            # Read these values from the assigned asset type (single source of truth).
+            from .asset_types import load_asset_type
+
+            td0 = load_asset_type(active_type_id_for_header)
+            if isinstance(td0, dict):
+                type_label_for_header = safe_str(td0.get("label")) or active_type_id_for_header
+                core_type = safe_str(td0.get("core_type"))
+                subtype = safe_str(td0.get("subtype"))
+                current_role = safe_str(td0.get("current_role"))
+            else:
+                type_label_for_header = active_type_id_for_header
+        else:
+            # If templates own ontology, lack of a template means these are unassigned.
+            type_label_for_header = "Unassigned"
+            core_type = "Unassigned"
+            subtype = "Unassigned"
+            current_role = "Unassigned"
+
         location = safe_str(asset.get("location"))
         quantity_v = asset.get("quantity")
         quantity_s = ""
@@ -336,6 +357,7 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
 
         st.markdown(
             " "
+            + f"<div class='dc-asset-type'><strong>Asset type:</strong> {html.escape(type_label_for_header)}</div>"
             + f"<div class='dc-asset-type'><strong>Core type:</strong> {html.escape(core_type or 'asset')}</div>"
             + (f"<div class='dc-asset-type'><strong>Subtype:</strong> {html.escape(subtype)}</div>" if subtype else "")
             + (f"<div class='dc-asset-type'><strong>Current role:</strong> {html.escape(current_role)}</div>" if current_role else "")
@@ -382,6 +404,65 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
             st.metric("Actualised gains (t/year)", f"{done_s:.2f}")
     with right_panel:
         st.markdown("**Data**")
+
+        with st.expander("Energy", expanded=False):
+            st.caption("Used for sidebar icons and basic energy semantics (e.g. a fridge is a consumer of electricity).")
+
+            if not asset_id:
+                st.info("This asset is missing an _id, so edits can't be applied safely.")
+            else:
+                from .ontology import ENERGY_ROLES, normalize_energy_role
+
+                # Ensure attributes dict exists.
+                attrs = asset.get("attributes")
+                if not isinstance(attrs, dict):
+                    attrs = {}
+                    asset["attributes"] = attrs
+
+                role_options = [""] + list(ENERGY_ROLES)
+                role_current = normalize_energy_role(safe_str(asset.get("current_role")))
+                role_index = role_options.index(role_current) if role_current in role_options else 0
+                new_role = st.selectbox(
+                    "Current role",
+                    role_options,
+                    index=role_index,
+                    key=f"energy_role::{asset_id}",
+                    help="Set to 'consumer' for appliances. Leave blank if not applicable.",
+                )
+
+                energy_type_options = ["", "electricity", "gas", "oil", "heat"]
+                energy_type_current = safe_str(attrs.get("energy_type")).strip().lower().replace("-", "_")
+                if not energy_type_current:
+                    # Back-compat: older data stored this as attributes.carrier.
+                    energy_type_current = safe_str(attrs.get("carrier")).strip().lower().replace("-", "_")
+                energy_type_index = energy_type_options.index(energy_type_current) if energy_type_current in energy_type_options else 0
+                new_energy_type = st.selectbox(
+                    "Energy type",
+                    energy_type_options,
+                    index=energy_type_index,
+                    key=f"energy_type::{asset_id}",
+                    help="Used to infer whether a consumer is electric (plug) vs gas/oil (barrel).",
+                )
+
+                changed = False
+                role_to_store = safe_str(new_role)
+                if normalize_energy_role(safe_str(asset.get("current_role"))) != normalize_energy_role(role_to_store):
+                    asset["current_role"] = normalize_energy_role(role_to_store)
+                    changed = True
+
+                energy_type_to_store = safe_str(new_energy_type).strip().lower().replace("-", "_")
+                if energy_type_to_store:
+                    if safe_str(attrs.get("energy_type")).strip().lower().replace("-", "_") != energy_type_to_store:
+                        attrs["energy_type"] = energy_type_to_store
+                        changed = True
+                else:
+                    if "energy_type" in attrs:
+                        attrs.pop("energy_type", None)
+                        changed = True
+
+                if changed:
+                    st.session_state.asset_tree_initialized = False
+                    st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
 
         with st.expander("Asset type", expanded=False):
             st.caption(
@@ -440,6 +521,26 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
                     key=select_key,
                 )
 
+                # Auto-apply selection changes (no explicit Apply button).
+                # We also prevent clearing an already-assigned type (no Clear type).
+                if selected_type_id == "(none)":
+                    if current_type_id:
+                        # Revert to current value on next rerun; clearing is intentionally disabled.
+                        st.session_state[pending_key] = current_type_id
+                        st.rerun()
+                else:
+                    if selected_type_id != current_type_id:
+                        td = load_asset_type(selected_type_id)
+                        if not isinstance(td, dict):
+                            st.error("Could not load that asset type definition.")
+                            st.session_state[pending_key] = current_type_id or "(none)"
+                            st.rerun()
+                        else:
+                            apply_asset_type_template(asset=asset, type_def=td, portfolio=portfolio)
+                            st.session_state.asset_tree_initialized = False
+                            st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
+                            st.rerun()
+
                 pick_cols = st.columns([0.34, 0.66], gap="small")
                 with pick_cols[0]:
                     if st.button(
@@ -457,10 +558,19 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
                         asset["llm_asset_type_pick_suggested"] = suggested_id
 
                         if suggested_id:
-                            # Can't modify a widget key after it has been instantiated.
-                            # Store pending selection and apply it before the selectbox is created on rerun.
-                            st.session_state[f"asset_type_select_pending::{asset_id}"] = suggested_id
-                            st.rerun()
+                            # Apply immediately so the rest of the UI updates without a second click.
+                            td = load_asset_type(suggested_id)
+                            if not isinstance(td, dict):
+                                st.error("AI suggested a template that could not be loaded.")
+                            else:
+                                apply_asset_type_template(asset=asset, type_def=td, portfolio=portfolio)
+                                st.session_state.asset_tree_initialized = False
+                                st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
+
+                                # Can't modify a widget key after it has been instantiated.
+                                # Store pending selection and apply it before the selectbox is created on rerun.
+                                st.session_state[f"asset_type_select_pending::{asset_id}"] = suggested_id
+                                st.rerun()
                         else:
                             st.warning("AI could not find a suitable template. Add one to asset_types/ and try again.")
 
@@ -474,37 +584,6 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
                             disabled=True,
                             key=f"asset_type_ai_pick_notes::{asset_id}",
                         )
-
-                cols = st.columns([0.34, 0.33, 0.33], gap="small")
-                with cols[0]:
-                    if st.button(
-                        "Apply template",
-                        use_container_width=True,
-                        disabled=(selected_type_id == "(none)"),
-                        key=f"asset_type_apply::{asset_id}",
-                    ):
-                        td = load_asset_type(selected_type_id)
-                        if not isinstance(td, dict):
-                            st.error("Could not load that asset type definition.")
-                        else:
-                            apply_asset_type_template(asset=asset, type_def=td, portfolio=portfolio)
-                            st.success(f"Applied asset type: {safe_str(td.get('label')) or safe_str(td.get('id'))}")
-                            st.session_state.asset_tree_initialized = False
-                            st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
-                            st.rerun()
-
-                with cols[1]:
-                    if st.button(
-                        "Clear type",
-                        use_container_width=True,
-                        disabled=not bool(current_type_id),
-                        key=f"asset_type_clear::{asset_id}",
-                    ):
-                        asset.pop("asset_type_id", None)
-                        st.success("Cleared asset type.")
-                        st.session_state.asset_tree_initialized = False
-                        st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
-                        st.rerun()
 
                 active_type_id = safe_str(asset.get("asset_type_id")).strip()
                 type_def = load_asset_type(active_type_id) if active_type_id else None

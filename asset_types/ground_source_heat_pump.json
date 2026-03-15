@@ -13,6 +13,12 @@
     {
       "key": "heat_pump_cop",
       "label": "Heat pump COP",
+      "core_type": "energy_system",
+      "subtype": "heat_pump",
+      "current_role": "consumer",
+      "attributes": {
+        "energy_type": "electricity"
+      },
       "kind": "number",
       "unit": "ratio",
       "default": 4.0,

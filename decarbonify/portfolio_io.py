@@ -160,6 +160,30 @@ def ensure_asset_ontology_fields(portfolio: Dict[str, Any]) -> None:
         normalize_energy_role,
     )
 
+    def looks_like_boiler(asset: Dict[str, Any]) -> bool:
+        subtype = safe_str(asset.get("subtype")).strip().lower().replace(" ", "_")
+        name = safe_str(asset.get("name")).strip().lower().replace(" ", "_")
+        atid = safe_str(asset.get("asset_type_id")).strip().lower().replace(" ", "_")
+        if "boiler" in subtype or "boiler" in name:
+            return True
+        if atid and "boiler" in atid:
+            return True
+        return False
+
+    def looks_like_fridge(asset: Dict[str, Any]) -> bool:
+        subtype = safe_str(asset.get("subtype")).strip().lower().replace(" ", "_")
+        name = safe_str(asset.get("name")).strip().lower().replace(" ", "_")
+        atid = safe_str(asset.get("asset_type_id")).strip().lower().replace(" ", "_")
+        blob = " ".join(p for p in [subtype, name, atid] if p).strip()
+        return any(tok in blob for tok in ("fridge", "freezer", "refrigerator"))
+
+    def looks_like_lighting(asset: Dict[str, Any]) -> bool:
+        subtype = safe_str(asset.get("subtype")).strip().lower().replace(" ", "_")
+        name = safe_str(asset.get("name")).strip().lower().replace(" ", "_")
+        atid = safe_str(asset.get("asset_type_id")).strip().lower().replace(" ", "_")
+        blob = " ".join(p for p in [subtype, name, atid] if p).strip()
+        return any(tok in blob for tok in ("light", "lighting", "floodlight", "floodlights", "led"))
+
     def walk(assets: Any) -> None:
         for asset in as_list(assets):
             if not isinstance(asset, dict):
@@ -186,7 +210,27 @@ def ensure_asset_ontology_fields(portfolio: Dict[str, Any]) -> None:
 
             # current_role
             cur_role = normalize_energy_role(safe_str(asset.get("current_role")))
-            if cur_role:
+            ct_norm = normalize_core_type(safe_str(asset.get("core_type")) or "asset")
+
+            # Ensure attributes dict exists early (used by the energy/carrier heuristics below).
+            attrs = asset.get("attributes")
+            if not isinstance(attrs, dict):
+                attrs = {}
+                asset["attributes"] = attrs
+
+            # Back-compat migration: older data used attributes.carrier.
+            # Prefer the new name attributes.energy_type going forward.
+            if not safe_str(attrs.get("energy_type")).strip() and safe_str(attrs.get("carrier")).strip():
+                attrs["energy_type"] = safe_str(attrs.get("carrier")).strip()
+
+            # Boilers are consumers. Correct legacy converter classification when it's
+            # clearly a boiler-like energy system.
+            if ct_norm == "energy_system" and looks_like_boiler(asset) and (not cur_role or cur_role == "converter"):
+                asset["current_role"] = "consumer"
+            elif ct_norm == "asset" and looks_like_fridge(asset) and not cur_role:
+                # Fridges are energy consumers (typically electricity).
+                asset["current_role"] = "consumer"
+            elif cur_role:
                 asset["current_role"] = cur_role
             else:
                 # Best-effort inference when missing.
@@ -225,9 +269,17 @@ def ensure_asset_ontology_fields(portfolio: Dict[str, Any]) -> None:
                             pass
 
             # attributes
-            attrs = asset.get("attributes")
-            if not isinstance(attrs, dict):
-                asset["attributes"] = {}
+            # (Already ensured earlier.)
+
+            # If this looks like a fridge/freezer and we have no explicit carrier hints,
+            # default to electricity so the sidebar can render the plug icon.
+            if looks_like_fridge(asset) or looks_like_lighting(asset):
+                has_hint = any(
+                    safe_str(attrs.get(k)).strip()
+                    for k in ("energy_type", "fuel", "carrier", "source", "sink")
+                )
+                if not has_hint:
+                    attrs.setdefault("energy_type", "electricity")
 
             walk(asset.get("assets"))
 

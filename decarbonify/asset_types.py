@@ -141,6 +141,8 @@ def apply_asset_type_template(*, asset: Dict[str, Any], type_def: Dict[str, Any]
     """Attach an asset type to an asset and ensure the fields exist.
 
     - Adds/updates asset['asset_type_id']
+    - Applies ontology defaults from the template (core_type/subtype/current_role)
+    - Applies default attributes from the template (e.g. attributes.energy_type)
     - Ensures input/output field entries exist under asset['data_fields']
     - Applies input defaults into derived.value (only when manual is empty and derived is empty)
     """
@@ -150,6 +152,37 @@ def apply_asset_type_template(*, asset: Dict[str, Any], type_def: Dict[str, Any]
         raise ValueError("Asset type definition missing id")
 
     asset["asset_type_id"] = type_id
+
+    # Apply ontology fields from template (if present).
+    # Local import to avoid circular deps.
+    from .ontology import normalize_core_type, normalize_energy_role
+
+    tmpl_core_type = safe_str(type_def.get("core_type")).strip()
+    if tmpl_core_type:
+        asset["core_type"] = normalize_core_type(tmpl_core_type)
+
+    tmpl_subtype = safe_str(type_def.get("subtype")).strip()
+    if tmpl_subtype:
+        asset["subtype"] = tmpl_subtype
+
+    tmpl_role = normalize_energy_role(safe_str(type_def.get("current_role")))
+    if tmpl_role:
+        asset["current_role"] = tmpl_role
+
+    tmpl_attrs = type_def.get("attributes")
+    if isinstance(tmpl_attrs, dict) and tmpl_attrs:
+        attrs = asset.get("attributes")
+        if not isinstance(attrs, dict):
+            attrs = {}
+            asset["attributes"] = attrs
+        # Apply attribute defaults only when missing/blank.
+        for k, v in tmpl_attrs.items():
+            kk = safe_str(k).strip()
+            if not kk or v is None:
+                continue
+            if safe_str(attrs.get(kk)).strip():
+                continue
+            attrs[kk] = v
 
     fields = _ensure_data_fields(asset)
 

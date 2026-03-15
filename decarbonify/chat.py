@@ -149,24 +149,18 @@ def llm_edit_selected_subtree(
     Returns: (assistant_message, applied_changes, added_asset_id_if_any)
     """
 
-    if not openai_client_available():
-        return (
-            "Edit mode requires AI (set OPENAI_API_KEY). You can still add assets manually in the JSON/file for now.",
-            False,
-            None,
-        )
-
-    try:
-        from openai import OpenAI  # type: ignore
-    except Exception:
-        return (
-            "AI edit mode is unavailable because the OpenAI client library isn't installed. Install requirements.txt and try again.",
-            False,
-            None,
-        )
-
+    ai_enabled = openai_client_available()
+    client = None
     model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-    client = OpenAI()
+
+    if ai_enabled:
+        try:
+            from openai import OpenAI  # type: ignore
+
+            client = OpenAI()
+        except Exception:
+            # Gracefully fall back to offline heuristics.
+            ai_enabled = False
 
     selected_asset = selected_node.data
     selected_id = safe_str(selected_asset.get("_id"))
@@ -239,6 +233,10 @@ def llm_edit_selected_subtree(
         # Always drop legacy type if present.
         out.pop("type", None)
 
+        # asset_type_id (template id)
+        if "asset_type_id" in out and out["asset_type_id"] is not None:
+            out["asset_type_id"] = safe_str(out.get("asset_type_id")).strip()
+
         # current_role
         if "current_role" in out:
             out["current_role"] = normalize_energy_role(safe_str(out.get("current_role")))
@@ -271,6 +269,62 @@ def llm_edit_selected_subtree(
             out["attributes"] = {}
 
         return out
+
+    def _best_effort_template_id(*, name: str, user_text: str, candidates: List[Dict[str, str]]) -> str:
+        """Heuristic template picker used when AI is off or LLM omitted asset_type_id."""
+
+        s = f"{name} {user_text}".lower()
+
+        # Common hard-coded intents first.
+        if "heat pump" in s:
+            if any(x in s for x in ["ground", "gs", "borehole"]):
+                return "ground_source_heat_pump"
+            return "air_source_heat_pump"
+        if "boiler" in s and "gas" in s:
+            return "gas_boiler"
+        if any(x in s for x in ["solar", "pv", "photovoltaic"]):
+            return "solar_pv"
+        if any(x in s for x in ["floodlight", "flood light", "floodlights"]):
+            return "floodlights_electric"
+        if "lighting" in s or "lights" in s:
+            return "lighting_electric"
+        if any(x in s for x in ["fridge", "refrigerator", "freezer"]):
+            return "refrigerator_freezer"
+        if "battery" in s:
+            return "mains_battery"
+
+        # Fallback: keyword match against template ids/labels/descriptions.
+        words = [w for w in re.split(r"[^a-z0-9]+", s) if len(w) >= 4]
+        if not words:
+            return ""
+
+        best_id = ""
+        best_score = 0
+        for c in candidates:
+            tid = (c.get("id") or "").lower()
+            blob = f"{c.get('id','')} {c.get('label','')} {c.get('description','')}".lower()
+            score = 0
+            for w in words:
+                if w in blob:
+                    score += 2
+                if w in tid:
+                    score += 1
+            if score > best_score:
+                best_score = score
+                best_id = c.get("id") or ""
+        return best_id if best_score >= 3 else ""
+
+    def _apply_template_if_any(*, asset_obj: Dict[str, Any], template_id: str) -> None:
+        if not template_id:
+            return
+        try:
+            from .asset_types import apply_asset_type_template, load_asset_type
+
+            td = load_asset_type(template_id)
+            if isinstance(td, dict):
+                apply_asset_type_template(asset=asset_obj, type_def=td, portfolio=portfolio)
+        except Exception:
+            return
 
     def _infer_core_type_and_subtype(*, name: str, user_text: str) -> Tuple[str, str]:
         s = f"{name} {user_text}".lower()
@@ -314,42 +368,59 @@ def llm_edit_selected_subtree(
             candidate = " ".join(w.capitalize() for w in candidate.split())
         return candidate
 
+    template_candidates: List[Dict[str, str]] = []
+    try:
+        from .asset_types import list_asset_type_summaries
+
+        summaries = list_asset_type_summaries()
+        for s in summaries[:80]:
+            template_candidates.append(
+                {
+                    "id": safe_str(getattr(s, "id", "")),
+                    "label": safe_str(getattr(s, "label", "")),
+                    "description": safe_str(getattr(s, "description", "")),
+                }
+            )
+    except Exception:
+        template_candidates = []
+
     system = (
         "You are an assistant that edits a portfolio asset hierarchy. "
         "You may ONLY propose operations that add new child assets under the currently selected node. "
-        "Make best-effort assumptions and DO NOT ask for the asset type unless absolutely necessary. "
-        "Use the ontology fields core_type and subtype. If the user says 'X building' or similar, use core_type='place' and subtype='building'. "
+        "Make best-effort assumptions and ask the user for clarification only if you truly need it. "
+        "Prefer setting asset_type_id to one of the provided template IDs when the match is obvious (e.g. heat pump, gas boiler, solar PV, lighting). "
         "Containment rules matter: land/natural features can contain buildings; buildings contain rooms and equipment; buildings and rooms cannot contain land/natural features. "
-        "You MAY include optional ontology fields on the new asset when you can infer them: "
-        "core_type (place/activity/asset/energy_system/resource/surface), subtype, current_role, location, quantity, attributes. "
+        "You MAY include optional fields on the new asset when you can infer them: asset_type_id, core_type, subtype, current_role, location, quantity, attributes, description. "
         "You MUST return STRICT JSON ONLY (no prose, no markdown). "
         "Return JSON with schema: "
-        "{\"reply\": str, \"ops\": [ {\"op\": \"add_child\", \"asset\": {\"name\": str, \"core_type\": str, \"subtype\": str, ...} } ] }. "
-        "Examples: "
-        "- Add a bowls club building -> {\"reply\":\"OK\",\"ops\":[{\"op\":\"add_child\",\"asset\":{\"name\":\"Bowls Club\",\"core_type\":\"place\",\"subtype\":\"building\"}}]} "
-        "- Add a storage shed -> {\"reply\":\"OK\",\"ops\":[{\"op\":\"add_child\",\"asset\":{\"name\":\"Storage Shed\",\"core_type\":\"asset\"}}]} "
+        "{\"reply\": str, \"ops\": [ {\"op\": \"add_child\", \"asset\": {\"name\": str, \"asset_type_id\": str, \"core_type\": str, \"subtype\": str, ...} } ] }. "
         "If you truly need clarification, return {\"reply\": str, \"ops\": []}."
     )
     user = (
         f"Selected asset (editable scope): {selected_path} (id={selected_id}, kind={selected_kind})\n"
         f"Current subtree (paths):\n{subtree_summary}\n\n"
+        f"Available templates (choose asset_type_id from these IDs when relevant):\n"
+        + "\n".join([f"- {t.get('id')}: {t.get('label')} — {t.get('description')}" for t in template_candidates if t.get("id")])
+        + "\n\n"
         f"User request: {user_message}\n"
     )
 
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        temperature=0.2,
-    )
+    parsed: Dict[str, Any]
+    if ai_enabled and client is not None:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.2,
+        )
 
-    content = (resp.choices[0].message.content or "").strip()
-    parsed = _parse_jsonish(content)
-    if parsed is None:
-        # Treat as a plain reply (we'll fallback-add if it looks like an add request).
-        parsed = {"reply": content, "ops": []}
+        content = (resp.choices[0].message.content or "").strip()
+        parsed = _parse_jsonish(content) or {"reply": content, "ops": []}
+    else:
+        # Offline mode: no LLM ops, we'll fall back to heuristic add if it looks like an add request.
+        parsed = {"reply": "", "ops": []}
 
     reply = safe_str(parsed.get("reply"))
     ops = parsed.get("ops")
@@ -380,6 +451,13 @@ def llm_edit_selected_subtree(
                 new_asset["subtype"] = inferred_sub
         new_asset.setdefault("subtype", "")
 
+        # Apply a template if specified or can be inferred.
+        tid = safe_str(new_asset.get("asset_type_id")).strip()
+        if not tid and template_candidates:
+            tid = _best_effort_template_id(name=name, user_text=user_message, candidates=template_candidates)
+        if tid:
+            _apply_template_if_any(asset_obj=new_asset, template_id=tid)
+
         # Enforce parent→child containment rules. If disallowed, coerce to generic.
         if not can_add_child(parent_asset=selected_asset, child_asset=new_asset):
             why = explain_disallowed_child_assets(parent_asset=selected_asset, child_asset=new_asset)
@@ -389,6 +467,7 @@ def llm_edit_selected_subtree(
             )
             new_asset["core_type"] = "asset"
             new_asset["subtype"] = ""
+            new_asset.pop("asset_type_id", None)
 
         new_asset.setdefault("_id", uuid.uuid4().hex)
         ok = add_child_asset(portfolio, parent_id=selected_id, child_asset=new_asset)
@@ -410,6 +489,12 @@ def llm_edit_selected_subtree(
                 "subtype": inferred_sub,
             }
 
+            # Apply a best-effort template in offline fallback too.
+            if template_candidates:
+                tid = _best_effort_template_id(name=guessed_name, user_text=user_message, candidates=template_candidates)
+                if tid:
+                    _apply_template_if_any(asset_obj=fallback_asset, template_id=tid)
+
             if not can_add_child(parent_asset=selected_asset, child_asset=fallback_asset):
                 why = explain_disallowed_child_assets(parent_asset=selected_asset, child_asset=fallback_asset)
                 coercions.append(
@@ -418,6 +503,7 @@ def llm_edit_selected_subtree(
                 )
                 fallback_asset["core_type"] = "asset"
                 fallback_asset["subtype"] = ""
+                fallback_asset.pop("asset_type_id", None)
 
             ok = add_child_asset(portfolio, parent_id=selected_id, child_asset=fallback_asset)
             if ok:
@@ -427,6 +513,9 @@ def llm_edit_selected_subtree(
                     reply = f"Added '{guessed_name}' under {selected_path}."
                 else:
                     reply = reply.rstrip() + f"\n\nApplied: added '{guessed_name}' under {selected_path}."
+
+                if safe_str(fallback_asset.get("asset_type_id")).strip():
+                    reply = reply.rstrip() + f"\nTemplate: {safe_str(fallback_asset.get('asset_type_id')).strip()}"
 
     if coercions:
         extra = "\n".join(coercions)
