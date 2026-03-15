@@ -1,0 +1,31 @@
+{
+  "id": "gas_boiler",
+  "label": "Gas boiler",
+  "description": "Combustion boiler using mains gas. Computes annual tCO2e from gas energy use.",
+  "inputs": [
+    {
+      "key": "annual_gas_kwh",
+      "label": "Annual gas use",
+      "kind": "number",
+      "unit": "kWh/year",
+      "help": "Total annual gas energy consumption attributable to this boiler."
+    },
+    {
+      "key": "gas_kgco2e_per_kwh",
+      "label": "Gas carbon intensity",
+      "kind": "number",
+      "unit": "kgCO2e/kWh",
+      "default": 0.184,
+      "help": "If you have a better factor for your region/supplier, override it."
+    }
+  ],
+  "outputs": [
+    {
+      "key": "emissions_tco2e_per_year",
+      "label": "Emissions",
+      "kind": "number",
+      "unit": "tCO2e/year",
+      "formula": "(annual_gas_kwh * gas_kgco2e_per_kwh) / 1000"
+    }
+  ]
+}

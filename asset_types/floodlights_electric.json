@@ -1,0 +1,45 @@
+{
+  "id": "floodlights_electric",
+  "label": "Floodlights (electric)",
+  "description": "Electric floodlights. Computes annual tCO2e from installed power and average daily usage.",
+  "inputs": [
+    {
+      "key": "total_power_watts",
+      "label": "Total installed power",
+      "kind": "number",
+      "unit": "W",
+      "help": "Sum of floodlight power (all lamps combined)."
+    },
+    {
+      "key": "average_daily_usage_hours",
+      "label": "Average daily usage",
+      "kind": "number",
+      "unit": "hours/day",
+      "help": "Average hours of use per day (use seasonal average if applicable)."
+    },
+    {
+      "key": "carbon_intensity_of_electricity",
+      "label": "Electricity carbon intensity",
+      "kind": "number",
+      "unit": "kgCO2e/kWh",
+      "default": 0.20,
+      "help": "Grid carbon intensity used to convert kWh into emissions."
+    }
+  ],
+  "outputs": [
+    {
+      "key": "annual_electricity_kwh",
+      "label": "Estimated annual electricity use",
+      "kind": "number",
+      "unit": "kWh/year",
+      "formula": "(total_power_watts / 1000) * average_daily_usage_hours * 365"
+    },
+    {
+      "key": "emissions_tco2e_per_year",
+      "label": "Emissions",
+      "kind": "number",
+      "unit": "tCO2e/year",
+      "formula": "((total_power_watts / 1000) * average_daily_usage_hours * 365 * carbon_intensity_of_electricity) / 1000"
+    }
+  ]
+}

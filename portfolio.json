@@ -1,5 +1,10 @@
 {
   "portfolio_name": "Bradwell Parish",
+  "defaults": {
+    "carbon_intensity_of_electricity": 0.2,
+    "gas_kgco2e_per_kwh": 0.184,
+    "heating_oil_kgco2e_per_kwh": 0.249
+  },
   "assets": [
     {
       "name": "Heelands Site",
@@ -34,6 +39,7 @@
                   "name": "Fridge/Freezer",
                   "core_type": "asset",
                   "subtype": "refrigerator_freezer",
+                  "asset_type_id": "refrigerator_freezer",
                   "current_role": "consumer",
                   "location": "Kitchen",
                   "quantity": 1,
@@ -55,6 +61,7 @@
               "name": "Gas Boiler",
               "core_type": "energy_system",
               "subtype": "boiler",
+              "asset_type_id": "gas_boiler",
               "current_role": "converter",
               "location": "Heelands Meeting Centre",
               "quantity": 1,
@@ -66,6 +73,7 @@
               "name": "Lighting",
               "core_type": "asset",
               "subtype": "lighting",
+              "asset_type_id": "lighting_electric",
               "current_role": "consumer",
               "location": "Heelands Meeting Centre",
               "quantity": 1,
@@ -78,6 +86,7 @@
           "name": "Solar Panels",
           "core_type": "energy_system",
           "subtype": "solar_pv",
+          "asset_type_id": "solar_pv",
           "current_role": "producer",
           "location": "Heelands Site",
           "quantity": 1,
@@ -109,6 +118,7 @@
           "name": "Floodlights",
           "core_type": "asset",
           "subtype": "floodlights",
+          "asset_type_id": "floodlights_electric",
           "current_role": "consumer",
           "location": "Football Field",
           "quantity": 1,

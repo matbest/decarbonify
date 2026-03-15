@@ -68,12 +68,12 @@ from .emissions import (
     DATA_FIELDS_KEY,
     EMISSIONS_KEY,
     emissions_field_help_text,
+    effective_emissions_tco2e_per_year,
     get_derived_value,
     get_manual_value,
     iter_asset_and_descendants,
     sum_emissions_produced_tco2e_per_year,
 )
-from .llm_emissions import estimate_emissions_tco2e_per_year, suggest_emissions_inputs
 from .recommendations import (
     carbon_signal,
     extract_recommendation_items,
@@ -344,78 +344,6 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
             unsafe_allow_html=True,
         )
 
-        with st.expander("Ontology", expanded=False):
-            if not asset_id:
-                st.warning("This asset is missing an _id, so it can't be edited safely.")
-            else:
-                from .ontology import CORE_TYPES, ENERGY_ROLES, normalize_core_type, normalize_energy_role
-
-                ct_key = f"ont_core_type::{asset_id}"
-                st_key = f"ont_subtype::{asset_id}"
-                cr_key = f"ont_current_role::{asset_id}"
-                loc_key = f"ont_location::{asset_id}"
-                qty_key = f"ont_quantity::{asset_id}"
-                attrs_key = f"ont_attributes::{asset_id}"
-
-                ct_options = ["asset"] + [t for t in CORE_TYPES if t != "asset"]
-                current_ct = normalize_core_type(core_type or "asset")
-                ct_index = ct_options.index(current_ct) if current_ct in ct_options else 0
-                ct_new = st.selectbox("Core type", ct_options, index=ct_index, key=ct_key)
-
-                subtype_new = st.text_input("Subtype", value=subtype, key=st_key)
-
-                role_options = [""] + list(ENERGY_ROLES)
-                current_cr = normalize_energy_role(current_role)
-                cr_index = role_options.index(current_cr) if current_cr in role_options else 0
-                cr_new = st.selectbox("Current role", role_options, index=cr_index, key=cr_key)
-                location_new = st.text_input("Location", value=location, key=loc_key)
-                quantity_new = st.text_input("Quantity", value=quantity_s, key=qty_key)
-
-                attrs_obj = asset.get("attributes")
-                if not isinstance(attrs_obj, dict):
-                    attrs_obj = {}
-                attrs_text = json.dumps(attrs_obj, ensure_ascii=False, indent=2)
-                attrs_new = st.text_area("Attributes (JSON)", value=attrs_text, height=120, key=attrs_key)
-
-                save_col, _spacer, cancel_col = st.columns([0.20, 0.60, 0.20], gap="small")
-                with save_col:
-                    if st.button("Save", type="primary", key=f"ont_save::{asset_id}"):
-                        asset["core_type"] = normalize_core_type(ct_new)
-                        asset["subtype"] = safe_str(subtype_new).strip()
-                        asset["current_role"] = normalize_energy_role(cr_new)
-                        asset["location"] = safe_str(location_new).strip()
-
-                        q_s = safe_str(quantity_new).strip()
-                        if not q_s:
-                            asset["quantity"] = None
-                        else:
-                            try:
-                                asset["quantity"] = float(q_s) if "." in q_s else int(q_s)
-                            except Exception:
-                                st.error("Quantity must be a number (or blank).")
-                                st.stop()
-
-                        a_s = safe_str(attrs_new).strip()
-                        if not a_s:
-                            asset["attributes"] = {}
-                        else:
-                            try:
-                                parsed = json.loads(a_s)
-                            except Exception as exc:
-                                st.error(f"Attributes JSON is invalid: {exc}")
-                                st.stop()
-                            if not isinstance(parsed, dict):
-                                st.error("Attributes JSON must be an object (e.g. {\"fuel\": \"gas\"}).")
-                                st.stop()
-                            asset["attributes"] = parsed
-
-                        ensure_asset_ontology_fields(portfolio)
-                        _refresh_only()
-                with cancel_col:
-                    if st.button("Cancel", key=f"ont_cancel::{asset_id}"):
-                        for k in (ct_key, st_key, cr_key, loc_key, qty_key, attrs_key):
-                            st.session_state.pop(k, None)
-
         st.markdown(f"**Carbon effect (qualitative):** {carbon_signal(asset)}")
 
         desc = safe_str(asset.get("description"))
@@ -424,14 +352,23 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
         else:
             st.caption("No description available for this asset.")
 
+        eff = effective_emissions_tco2e_per_year(asset)
+        if eff is not None:
+            st.metric(
+                "Emissions (this asset)",
+                f"{float(eff):.2f} tCO₂e/yr",
+                help=f"Equivalent: {float(eff) * 1000:.0f} kgCO₂e/yr.",
+            )
+
         total_tco2e, contributing, visited, overrides_used = sum_emissions_produced_tco2e_per_year(asset)
         if contributing > 0:
             st.metric(
                 "Total CO₂e for this asset + children (t/year)",
-                f"{total_tco2e:.2f}",
+                f"{total_tco2e:.2f} tCO₂e/yr",
                 help=(
                     f"Sum of selected asset + {visited - 1} descendants. "
                     f"Values present for {contributing} of {visited} assets; overrides used for {overrides_used} assets."
+                    f"\nEquivalent: {total_tco2e * 1000:.0f} kgCO₂e/yr."
                 ),
             )
         else:
@@ -446,261 +383,173 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
     with right_panel:
         st.markdown("**Data**")
 
-        with st.expander("AI: emissions estimate", expanded=False):
-            st.caption("AI can ask for the specific inputs it needs for this asset, then estimate annual tCO2e (positive=emits, negative=sequesters).")
+        with st.expander("Asset type", expanded=False):
+            st.caption(
+                "Apply a reusable asset-type template (inputs + formulas). "
+                "Fill inputs (manual values override), optionally ask AI for suggestions, then compute outputs into derived fields."
+            )
 
             if not asset_id:
                 st.warning("This asset is missing an _id.")
-            elif not openai_client_available():
-                st.warning("AI is disabled (missing OPENAI_API_KEY).")
             else:
-                ai_cols = st.columns([0.55, 0.45], gap="small")
-                with ai_cols[0]:
+                from .asset_types import (
+                    apply_asset_type_template,
+                    compute_asset_type_outputs,
+                    list_asset_type_summaries,
+                    load_asset_type,
+                    persist_computed_outputs,
+                )
+                from .llm_asset_types import suggest_asset_type_id, suggest_asset_type_input_values
+
+                portfolio_defaults = portfolio.get("defaults") if isinstance(portfolio, dict) else None
+                portfolio_defaults = portfolio_defaults if isinstance(portfolio_defaults, dict) else {}
+
+                summaries = list_asset_type_summaries()
+                ids = ["(none)"] + [s.id for s in summaries]
+
+                current_type_id = safe_str(asset.get("asset_type_id")).strip()
+
+                def _fmt(tid: str) -> str:
+                    if tid == "(none)":
+                        return "(none)"
+                    for s in summaries:
+                        if s.id == tid:
+                            return f"{s.label} ({s.id})"
+                    return tid
+
+                default_index = 0
+                if current_type_id:
+                    try:
+                        default_index = ids.index(current_type_id)
+                    except Exception:
+                        default_index = 0
+
+                select_key = f"asset_type_select::{asset_id}"
+                pending_key = f"asset_type_select_pending::{asset_id}"
+                if pending_key in st.session_state:
+                    pending_value = safe_str(st.session_state.get(pending_key)).strip()
+                    st.session_state.pop(pending_key, None)
+                    if pending_value and pending_value in set(ids):
+                        st.session_state[select_key] = pending_value
+
+                selected_type_id = st.selectbox(
+                    "Template",
+                    ids,
+                    index=default_index,
+                    format_func=_fmt,
+                    key=select_key,
+                )
+
+                pick_cols = st.columns([0.34, 0.66], gap="small")
+                with pick_cols[0]:
                     if st.button(
-                        "Ask AI what inputs are needed",
+                        "AI: pick template",
                         use_container_width=True,
-                        key=f"ai_inputs_btn::{asset_id}",
+                        disabled=not openai_client_available() or (len(summaries) == 0),
+                        key=f"asset_type_ai_pick::{asset_id}",
+                        help=None if openai_client_available() else "Requires AI (set OPENAI_API_KEY).",
                     ):
-                        fields_suggested, reply = suggest_emissions_inputs(portfolio=portfolio, asset=asset, max_fields=3)
-                        asset["llm_emissions_inputs"] = fields_suggested
-                        asset["llm_emissions_inputs_reply"] = reply
-                        st.rerun()
-                with ai_cols[1]:
-                    if st.button(
-                        "Estimate tCO2e/year",
-                        use_container_width=True,
-                        key=f"ai_estimate_btn::{asset_id}",
-                    ):
-                        with st.spinner("Estimating..."):
-                            value, notes, missing, equation_latex = estimate_emissions_tco2e_per_year(portfolio=portfolio, asset=asset)
+                        with st.spinner("Choosing template..."):
+                            templ = [{"id": s.id, "label": s.label, "description": s.description} for s in summaries]
+                            suggested_id, reply = suggest_asset_type_id(portfolio=portfolio, asset=asset, templates=templ)
 
-                        asset["llm_emissions_estimate_notes"] = notes
-                        asset["llm_emissions_estimate_missing"] = missing
-                        asset["llm_emissions_estimate_equation_latex"] = equation_latex
+                        asset["llm_asset_type_pick_reply"] = reply
+                        asset["llm_asset_type_pick_suggested"] = suggested_id
 
-                        if value is None:
-                            st.warning("Not enough data to estimate yet. See missing inputs below.")
-
-                            # Auto-create missing input fields (up to 3 total) so the user can fill them immediately.
-                            missing_keys: List[str] = []
-                            if isinstance(missing, list):
-                                for k in missing:
-                                    ks = safe_str(k)
-                                    if ks:
-                                        missing_keys.append(ks)
-
-                            if missing_keys:
-                                existing_raw = asset.get("llm_emissions_inputs")
-                                existing_list: List[Dict[str, Any]] = []
-                                if isinstance(existing_raw, list):
-                                    existing_list = [x for x in existing_raw if isinstance(x, dict)]
-
-                                existing_keys = {safe_str(x.get("key")) for x in existing_list if safe_str(x.get("key"))}
-                                remaining = 3 - len(existing_keys)
-
-                                fields = asset.get(DATA_FIELDS_KEY)
-                                if not isinstance(fields, dict):
-                                    fields = {}
-                                    asset[DATA_FIELDS_KEY] = fields
-
-                                def _guess_kind(k0: str) -> str:
-                                    k1 = (k0 or "").lower()
-                                    if k1 in {"fuel", "tariff", "supplier"}:
-                                        return "string"
-                                    if k1.startswith("is_") or k1.startswith("has_"):
-                                        return "boolean"
-                                    if any(k1.endswith(suf) for suf in [
-                                        "_kwh",
-                                        "_kw",
-                                        "_w",
-                                        "_watts",
-                                        "_hours",
-                                        "_hours_per_day",
-                                        "_count",
-                                        "_number",
-                                        "_qty",
-                                        "_quantity",
-                                        "_m2",
-                                        "_sqm",
-                                        "_acres",
-                                        "_km",
-                                        "_miles",
-                                        "_litres",
-                                        "_gallons",
-                                    ]):
-                                        return "number"
-                                    return "string"
-
-                                def _guess_unit(k0: str) -> str:
-                                    k1 = (k0 or "").lower()
-                                    if k1.endswith("_kwh"):
-                                        return "kWh"
-                                    if k1.endswith("_kw"):
-                                        return "kW"
-                                    if k1.endswith("_w") or k1.endswith("_watts"):
-                                        return "W"
-                                    if "hours" in k1:
-                                        return "hours"
-                                    if k1.endswith("_m2") or k1.endswith("_sqm"):
-                                        return "m²"
-                                    if k1.endswith("_acres"):
-                                        return "acres"
-                                    if k1.endswith("_km"):
-                                        return "km"
-                                    if k1.endswith("_miles"):
-                                        return "miles"
-                                    if k1.endswith("_litres"):
-                                        return "litres"
-                                    if k1.endswith("_gallons"):
-                                        return "gallons"
-                                    return ""
-
-                                for k in missing_keys:
-                                    if remaining <= 0:
-                                        break
-                                    if k in existing_keys:
-                                        continue
-
-                                    # Auto-fill electricity carbon intensity from defaults rather than asking the user.
-                                    if k.lower() == "carbon_intensity_of_electricity":
-                                        assumed = None
-                                        try:
-                                            import os
-
-                                            assumed = float(os.environ.get("DEFAULT_GRID_INTENSITY_KGCO2E_PER_KWH", "0.20") or 0.20)
-                                        except Exception:
-                                            assumed = 0.20
-
-                                        entry = fields.get(k)
-                                        if not isinstance(entry, dict):
-                                            entry = {}
-                                            fields[k] = entry
-                                        entry.setdefault("label", "Carbon intensity of electricity")
-                                        entry.setdefault("kind", "number")
-                                        entry.setdefault("unit", "kgCO2e/kWh")
-                                        entry.setdefault(
-                                            "question",
-                                            "Auto-filled from DEFAULT_GRID_INTENSITY_KGCO2E_PER_KWH; override if you know a better local value.",
-                                        )
-                                        derived = entry.get("derived")
-                                        if not isinstance(derived, dict):
-                                            derived = {}
-                                            entry["derived"] = derived
-                                        if derived.get("value") is None:
-                                            derived["value"] = float(assumed)
-                                        derived.setdefault("notes", "Assumed default grid intensity.")
-                                        manual = entry.get("manual")
-                                        if not isinstance(manual, dict):
-                                            manual = {}
-                                            entry["manual"] = manual
-                                        manual.setdefault("value", None)
-                                        existing_keys.add(k)
-                                        continue
-
-                                    kind = _guess_kind(k)
-                                    label = (k or "").replace("_", " ").strip().title() or k
-                                    unit = _guess_unit(k)
-                                    if k.lower() == "fuel":
-                                        question = "What fuel/energy source does this use? (electricity, gas, diesel, etc.)"
-                                    else:
-                                        question = f"Enter {label.lower()}."
-
-                                    existing_list.append(
-                                        {
-                                            "key": k,
-                                            "label": label,
-                                            "kind": kind,
-                                            "unit": unit,
-                                            "question": question,
-                                        }
-                                    )
-                                    existing_keys.add(k)
-                                    remaining -= 1
-
-                                    # Also create the underlying data_fields entry so it persists in JSON on save.
-                                    entry = fields.get(k)
-                                    if not isinstance(entry, dict):
-                                        entry = {}
-                                        fields[k] = entry
-                                    entry.setdefault("label", label)
-                                    entry.setdefault("kind", kind)
-                                    if unit:
-                                        entry.setdefault("unit", unit)
-                                    if question:
-                                        entry.setdefault("question", question)
-                                    manual = entry.get("manual")
-                                    if not isinstance(manual, dict):
-                                        manual = {}
-                                        entry["manual"] = manual
-                                    manual.setdefault("value", None)
-                                    derived = entry.get("derived")
-                                    if not isinstance(derived, dict):
-                                        derived = {}
-                                        entry["derived"] = derived
-                                    derived.setdefault("value", None)
-
-                                asset["llm_emissions_inputs"] = existing_list
+                        if suggested_id:
+                            # Can't modify a widget key after it has been instantiated.
+                            # Store pending selection and apply it before the selectbox is created on rerun.
+                            st.session_state[f"asset_type_select_pending::{asset_id}"] = suggested_id
+                            st.rerun()
                         else:
-                            # Write into derived emissions value (manual still overrides).
-                            fields = asset.get(DATA_FIELDS_KEY)
-                            if not isinstance(fields, dict):
-                                fields = {}
-                                asset[DATA_FIELDS_KEY] = fields
-                            entry = fields.get(EMISSIONS_KEY)
-                            if not isinstance(entry, dict):
-                                entry = {"label": "Emissions", "kind": "number", "unit": "tCO2e/year"}
-                                fields[EMISSIONS_KEY] = entry
-                            derived = entry.get("derived")
-                            if not isinstance(derived, dict):
-                                derived = {}
-                                entry["derived"] = derived
-                            derived["value"] = float(value)
-                            derived["notes"] = notes
-                            if equation_latex:
-                                derived["equation_latex"] = equation_latex
-                            st.success(f"Estimated emissions: {float(value):.2f} tCO2e/year")
+                            st.warning("AI could not find a suitable template. Add one to asset_types/ and try again.")
 
-                        # Refresh the tree/UI without autosaving.
+                with pick_cols[1]:
+                    pick_reply = safe_str(asset.get("llm_asset_type_pick_reply"))
+                    if pick_reply:
+                        st.text_area(
+                            "AI template notes",
+                            value=pick_reply,
+                            height=100,
+                            disabled=True,
+                            key=f"asset_type_ai_pick_notes::{asset_id}",
+                        )
+
+                cols = st.columns([0.34, 0.33, 0.33], gap="small")
+                with cols[0]:
+                    if st.button(
+                        "Apply template",
+                        use_container_width=True,
+                        disabled=(selected_type_id == "(none)"),
+                        key=f"asset_type_apply::{asset_id}",
+                    ):
+                        td = load_asset_type(selected_type_id)
+                        if not isinstance(td, dict):
+                            st.error("Could not load that asset type definition.")
+                        else:
+                            apply_asset_type_template(asset=asset, type_def=td, portfolio=portfolio)
+                            st.success(f"Applied asset type: {safe_str(td.get('label')) or safe_str(td.get('id'))}")
+                            st.session_state.asset_tree_initialized = False
+                            st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
+                            st.rerun()
+
+                with cols[1]:
+                    if st.button(
+                        "Clear type",
+                        use_container_width=True,
+                        disabled=not bool(current_type_id),
+                        key=f"asset_type_clear::{asset_id}",
+                    ):
+                        asset.pop("asset_type_id", None)
+                        st.success("Cleared asset type.")
                         st.session_state.asset_tree_initialized = False
                         st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
                         st.rerun()
 
-                reply = safe_str(asset.get("llm_emissions_inputs_reply"))
-                if reply:
-                    st.caption(reply)
+                active_type_id = safe_str(asset.get("asset_type_id")).strip()
+                type_def = load_asset_type(active_type_id) if active_type_id else None
+                if not isinstance(type_def, dict):
+                    if active_type_id:
+                        st.warning(f"Asset type '{active_type_id}' not found.")
+                else:
+                    desc = safe_str(type_def.get("description"))
+                    if desc:
+                        st.caption(desc)
 
-                suggested = asset.get("llm_emissions_inputs")
-                suggested_list: List[Dict[str, Any]] = []
-                if isinstance(suggested, list):
-                    suggested_list = [x for x in suggested if isinstance(x, dict)]
+                    # Render input widgets
+                    inputs = type_def.get("inputs")
+                    inputs_list: List[Dict[str, Any]] = []
+                    if isinstance(inputs, list):
+                        inputs_list = [x for x in inputs if isinstance(x, dict)]
 
-                if suggested_list:
-                    st.markdown("**Inputs to fill**")
-                    # Render per-suggested input widgets that write into data_fields.manual.value
                     fields = asset.get(DATA_FIELDS_KEY)
                     if not isinstance(fields, dict):
                         fields = {}
                         asset[DATA_FIELDS_KEY] = fields
 
-                    for f in suggested_list:
-                        key = safe_str(f.get("key"))
-                        if not key:
+                    missing_for_ai: List[str] = []
+
+                    if inputs_list:
+                        st.markdown("**Inputs**")
+                    for f in inputs_list:
+                        k = safe_str(f.get("key")).strip()
+                        if not k:
                             continue
-                        label = safe_str(f.get("label")) or key
+                        label = safe_str(f.get("label")) or k
                         kind = safe_str(f.get("kind")) or "string"
                         unit = safe_str(f.get("unit"))
-                        question = safe_str(f.get("question"))
+                        help_text = safe_str(f.get("help"))
 
-                        entry = fields.get(key)
+                        entry = fields.get(k)
                         if not isinstance(entry, dict):
                             entry = {}
-                            fields[key] = entry
+                            fields[k] = entry
                         entry.setdefault("label", label)
                         entry.setdefault("kind", kind)
                         if unit:
                             entry.setdefault("unit", unit)
-                        if question:
-                            entry["question"] = question
+                        if help_text:
+                            entry.setdefault("question", help_text)
 
                         manual = entry.get("manual")
                         if not isinstance(manual, dict):
@@ -708,15 +557,45 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
                             entry["manual"] = manual
                         manual_val = manual.get("value")
 
-                        row_l, row_r = st.columns([0.52, 0.48], gap="small")
+                        derived = entry.get("derived")
+                        if not isinstance(derived, dict):
+                            derived = {}
+                            entry["derived"] = derived
+                        derived_val = derived.get("value")
+                        derived_source = safe_str(derived.get("source")).strip().lower()
+
+                        # If this field is provided by portfolio defaults and not overridden, don't ask for it.
+                        if manual_val is None and derived_val is None and k in portfolio_defaults:
+                            derived["value"] = portfolio_defaults.get(k)
+                            derived["source"] = "portfolio_default"
+                            derived_val = derived.get("value")
+                            derived_source = "portfolio_default"
+
+                        if manual_val is None and derived_source == "portfolio_default" and k in portfolio_defaults:
+                            val = portfolio_defaults.get(k)
+                            show = f"Using portfolio default: {val}"
+                            if unit:
+                                show = show + f" {unit}"
+                            st.caption(f"{label}: {show}")
+                            continue
+
+                        effective_val = manual_val if manual_val is not None else derived_val
+                        if effective_val is None and k in portfolio_defaults:
+                            st.caption(f"Will use portfolio default: {portfolio_defaults.get(k)}")
+                        elif effective_val is None:
+                            missing_for_ai.append(k)
+
+                        row_l, row_r = st.columns([0.55, 0.45], gap="small")
                         with row_l:
                             st.write(label)
                             if unit:
                                 st.caption(unit)
-                            if question:
-                                st.caption(question)
+                            if help_text:
+                                st.caption(help_text)
+                            if manual_val is None and derived_val is not None:
+                                st.caption(f"Using suggestion/default: {derived_val}")
                         with row_r:
-                            widget_key = f"ai_input_{asset_id}_{key}"
+                            widget_key = f"type_input_{asset_id}_{k}"
                             if kind == "number":
                                 default = "" if manual_val is None else str(manual_val)
                                 raw = st.text_input("", value=default, key=widget_key, label_visibility="collapsed")
@@ -727,83 +606,85 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
                                     try:
                                         manual["value"] = float(s.replace(",", ""))
                                     except Exception:
-                                        st.warning(f"Invalid number for {key}.")
+                                        st.warning(f"Invalid number for {k}.")
                             elif kind == "boolean":
-                                manual["value"] = bool(st.checkbox("", value=bool(manual_val), key=widget_key, label_visibility="collapsed"))
+                                manual["value"] = bool(
+                                    st.checkbox("", value=bool(manual_val), key=widget_key, label_visibility="collapsed")
+                                )
                             else:
                                 default = "" if manual_val is None else str(manual_val)
                                 manual["value"] = st.text_input("", value=default, key=widget_key, label_visibility="collapsed")
 
-                missing = asset.get("llm_emissions_estimate_missing")
-                if isinstance(missing, list) and missing:
-                    miss_str = ", ".join(safe_str(x) for x in missing if safe_str(x))
-                    if miss_str:
-                        st.warning(f"Missing inputs: {miss_str}")
-
-                    # If the estimate needs one more input, allow asking a follow-up question.
-                    remaining = 3 - len(suggested_list)
-                    if remaining > 0:
+                    # AI suggestions
+                    ai_disabled = not openai_client_available()
+                    ai_help_cols = st.columns([0.5, 0.5], gap="small")
+                    with ai_help_cols[0]:
                         if st.button(
-                            "Ask AI for missing inputs",
+                            "AI: suggest missing values",
                             use_container_width=True,
-                            key=f"ai_inputs_missing_btn::{asset_id}",
+                            disabled=ai_disabled or (not missing_for_ai),
+                            key=f"asset_type_ai_suggest::{asset_id}",
+                            help=None if not ai_disabled else "Requires AI (set OPENAI_API_KEY).",
                         ):
-                            fields_new, reply2 = suggest_emissions_inputs(
-                                portfolio=portfolio,
-                                asset=asset,
-                                max_fields=remaining,
-                                focus_missing_keys=[safe_str(x) for x in missing if safe_str(x)],
-                            )
+                            with st.spinner("Asking AI..."):
+                                suggested, reply = suggest_asset_type_input_values(
+                                    portfolio=portfolio,
+                                    asset=asset,
+                                    type_def=type_def,
+                                    only_missing_keys=missing_for_ai,
+                                )
+                            asset["llm_asset_type_inputs_reply"] = reply
 
-                            existing_raw = asset.get("llm_emissions_inputs")
-                            existing_list: List[Dict[str, Any]] = []
-                            if isinstance(existing_raw, list):
-                                existing_list = [x for x in existing_raw if isinstance(x, dict)]
-                            existing_keys = {safe_str(x.get("key")) for x in existing_list if safe_str(x.get("key"))}
-
-                            for nf in fields_new:
-                                if not isinstance(nf, dict):
+                            for k, v in (suggested or {}).items():
+                                ks = safe_str(k).strip()
+                                if not ks:
                                     continue
-                                k = safe_str(nf.get("key"))
-                                if not k or k in existing_keys:
+                                entry = fields.get(ks)
+                                if not isinstance(entry, dict):
                                     continue
-                                existing_list.append(nf)
-                                existing_keys.add(k)
+                                manual = entry.get("manual")
+                                if isinstance(manual, dict) and manual.get("value") is not None:
+                                    continue
+                                derived = entry.get("derived")
+                                if not isinstance(derived, dict):
+                                    derived = {}
+                                    entry["derived"] = derived
+                                derived["value"] = v
+                                derived["source"] = "ai"
+                                derived["notes"] = "AI suggestion (may be wrong). Review and override manually if needed."
 
-                            asset["llm_emissions_inputs"] = existing_list
-                            asset["llm_emissions_inputs_reply"] = reply2
+                            st.session_state.asset_tree_initialized = False
+                            st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
                             st.rerun()
 
-                # Show equation (LaTeX) + explain calculation/assumptions in a small text box.
-                # Prefer the latest estimator notes, otherwise fall back to the derived notes (if present).
-                notes = safe_str(asset.get("llm_emissions_estimate_notes"))
-                equation = safe_str(asset.get("llm_emissions_estimate_equation_latex"))
-                if not notes:
-                    try:
-                        df = asset.get(DATA_FIELDS_KEY)
-                        if isinstance(df, dict):
-                            e = df.get(EMISSIONS_KEY)
-                            if isinstance(e, dict):
-                                d = e.get("derived")
-                                if isinstance(d, dict):
-                                    notes = safe_str(d.get("notes"))
-                                    if not equation:
-                                        equation = safe_str(d.get("equation_latex"))
-                    except Exception:
-                        notes = notes
+                    with ai_help_cols[1]:
+                        if st.button(
+                            "Compute outputs",
+                            use_container_width=True,
+                            key=f"asset_type_compute::{asset_id}",
+                        ):
+                            computed, missing, errors = compute_asset_type_outputs(asset=asset, type_def=type_def, portfolio=portfolio)
+                            if errors:
+                                st.error("; ".join(errors))
+                            if missing:
+                                st.warning("Missing inputs: " + ", ".join(missing))
+                            if computed:
+                                persist_computed_outputs(asset=asset, type_def=type_def, computed=computed)
+                                st.success("Updated computed fields.")
 
-                if equation:
-                    st.markdown("**Equation**")
-                    st.latex(equation)
+                                st.session_state.asset_tree_initialized = False
+                                st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
+                                st.rerun()
 
-                if notes:
-                    st.text_area(
-                        "How this was calculated",
-                        value=notes,
-                        height=120,
-                        disabled=True,
-                        key=f"ai_emissions_notes::{asset_id}",
-                    )
+                    reply = safe_str(asset.get("llm_asset_type_inputs_reply"))
+                    if reply:
+                        st.text_area(
+                            "AI notes",
+                            value=reply,
+                            height=120,
+                            disabled=True,
+                            key=f"asset_type_ai_notes::{asset_id}",
+                        )
 
     def _delete_rec_saving(*, rec: Dict[str, Any], rec_key: str) -> None:
         """Delete a saved saving: clears Done, undoes applied changes, and removes saved status."""

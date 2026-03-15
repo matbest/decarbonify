@@ -419,6 +419,46 @@ selected_node = node_by_id.get(st.session_state.selected_node_id)
 
 
 with st.sidebar:
+    st.markdown("### Defaults")
+
+    defaults = portfolio.get("defaults") if isinstance(portfolio, dict) else None
+    if not isinstance(defaults, dict):
+        defaults = {}
+        portfolio["defaults"] = defaults
+
+    with st.expander("View defaults", expanded=False):
+        st.caption(
+            "These portfolio-level values are used by asset-type formulas when an input is missing on an asset. "
+            "You can override per-asset by filling a manual value for the same key."
+        )
+
+        ci_elec = st.number_input(
+            "Electricity carbon intensity (kgCO2e/kWh)",
+            min_value=0.0,
+            value=float(defaults.get("carbon_intensity_of_electricity", 0.2) or 0.2),
+            step=0.01,
+            key="defaults_ci_electricity",
+        )
+        defaults["carbon_intensity_of_electricity"] = float(ci_elec)
+
+        ci_gas = st.number_input(
+            "Gas carbon intensity (kgCO2e/kWh)",
+            min_value=0.0,
+            value=float(defaults.get("gas_kgco2e_per_kwh", 0.184) or 0.184),
+            step=0.001,
+            key="defaults_ci_gas",
+        )
+        defaults["gas_kgco2e_per_kwh"] = float(ci_gas)
+
+        ci_oil = st.number_input(
+            "Heating oil carbon intensity (kgCO2e/kWh)",
+            min_value=0.0,
+            value=float(defaults.get("heating_oil_kgco2e_per_kwh", 0.249) or 0.249),
+            step=0.001,
+            key="defaults_ci_heating_oil",
+        )
+        defaults["heating_oil_kgco2e_per_kwh"] = float(ci_oil)
+
     st.divider()
     st.markdown("### Selected asset")
 
@@ -528,48 +568,45 @@ with st.sidebar:
             auth.logout()
             st.rerun()
 
-main_left, main_right = st.columns([0.72, 0.28], gap="large")
+if not selected_node:
+    st.subheader("Asset Detail")
+    st.info("Select an asset to view details.")
 
-with main_left:
-    if not selected_node:
-        st.subheader("Asset Detail")
-        st.info("Select an asset to view details.")
+    with st.expander("Add root asset", expanded=False):
+        root_name = st.text_input("Name", key="add_root_name")
+        ct_options = ["asset"] + [t for t in CORE_TYPES if t != "asset"]
+        root_core_type = st.selectbox("Core type", ct_options, index=0, key="add_root_core_type")
+        root_subtype = st.text_input("Subtype", value="", key="add_root_subtype")
+        root_desc = st.text_input("Description (optional)", key="add_root_desc")
+        if st.button("Add root", type="primary", disabled=not (root_name or "").strip()):
+            roots = portfolio.get("assets")
+            if not isinstance(roots, list):
+                roots = []
+                portfolio["assets"] = roots
 
-        with st.expander("Add root asset", expanded=False):
-            root_name = st.text_input("Name", key="add_root_name")
-            ct_options = ["asset"] + [t for t in CORE_TYPES if t != "asset"]
-            root_core_type = st.selectbox("Core type", ct_options, index=0, key="add_root_core_type")
-            root_subtype = st.text_input("Subtype", value="", key="add_root_subtype")
-            root_desc = st.text_input("Description (optional)", key="add_root_desc")
-            if st.button("Add root", type="primary", disabled=not (root_name or "").strip()):
-                roots = portfolio.get("assets")
-                if not isinstance(roots, list):
-                    roots = []
-                    portfolio["assets"] = roots
+            new_id = str(uuid.uuid4())
+            new_asset: Dict[str, Any] = {
+                "_id": new_id,
+                "name": (root_name or "").strip(),
+                "core_type": normalize_core_type(root_core_type),
+                "subtype": (root_subtype or "").strip(),
+            }
+            if (root_desc or "").strip():
+                new_asset["description"] = root_desc.strip()
+            roots.append(new_asset)
+            ensure_asset_ids(portfolio, id_key="_id")
+            ensure_asset_data_fields(portfolio)
+            ensure_asset_ontology_fields(portfolio)
+            ensure_asset_ontology_fields(portfolio)
 
-                new_id = str(uuid.uuid4())
-                new_asset: Dict[str, Any] = {
-                    "_id": new_id,
-                    "name": (root_name or "").strip(),
-                    "core_type": normalize_core_type(root_core_type),
-                    "subtype": (root_subtype or "").strip(),
-                }
-                if (root_desc or "").strip():
-                    new_asset["description"] = root_desc.strip()
-                roots.append(new_asset)
-                ensure_asset_ids(portfolio, id_key="_id")
-                ensure_asset_data_fields(portfolio)
-                ensure_asset_ontology_fields(portfolio)
-                ensure_asset_ontology_fields(portfolio)
+            st.session_state.selected_node_id = new_id
+            st.session_state.asset_tree_initialized = False
+            st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
+            for k in ("add_root_name", "add_root_core_type", "add_root_subtype", "add_root_desc"):
+                st.session_state.pop(k, None)
+            st.rerun()
+else:
+    render_asset_detail_and_recommendations(portfolio=portfolio, selected_node=selected_node)
 
-                st.session_state.selected_node_id = new_id
-                st.session_state.asset_tree_initialized = False
-                st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
-                for k in ("add_root_name", "add_root_core_type", "add_root_subtype", "add_root_desc"):
-                    st.session_state.pop(k, None)
-                st.rerun()
-    else:
-        render_asset_detail_and_recommendations(portfolio=portfolio, selected_node=selected_node)
-
-with main_right:
-    render_chat(portfolio=portfolio, nodes=nodes, selected_node=selected_node)
+st.divider()
+render_chat(portfolio=portfolio, nodes=nodes, selected_node=selected_node)

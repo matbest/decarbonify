@@ -96,6 +96,39 @@ Optionally set a model:
 
 If `OPENAI_API_KEY` is not set, the app uses a lightweight heuristic fallback.
 
+## Asset type templates (JSON + formulas)
+
+This repo includes an in-repo library of reusable **asset type templates** in the `asset_types/` folder.
+
+Each template is a JSON file that defines:
+- **inputs**: fields the user should fill (stored in `asset.data_fields.<key>.manual.value`)
+- **outputs**: derived fields computed from arithmetic-only formulas (stored in `asset.data_fields.<key>.derived.value`)
+
+In the app, open an asset and use **Data → Asset type** to:
+- Apply a template
+- Fill inputs (manual overrides always win)
+- Optionally ask AI to suggest missing inputs
+- Compute outputs and write them back into the portfolio
+
+Template schema (example):
+
+```json
+{
+	"id": "gas_boiler",
+	"label": "Gas boiler",
+	"description": "...",
+	"inputs": [
+		{"key": "annual_gas_kwh", "label": "Annual gas use", "kind": "number", "unit": "kWh/year"},
+		{"key": "gas_kgco2e_per_kwh", "label": "Gas carbon intensity", "kind": "number", "unit": "kgCO2e/kWh", "default": 0.184}
+	],
+	"outputs": [
+		{"key": "emissions_tco2e_per_year", "kind": "number", "unit": "tCO2e/year", "formula": "(annual_gas_kwh * gas_kgco2e_per_kwh) / 1000"}
+	]
+}
+```
+
+Formula safety: formulas are evaluated using a restricted arithmetic-only parser (no function calls, no attribute access).
+
 ## Portfolio JSON format
 
 A portfolio is stored as JSON with a name and a list of assets. Each asset can include nested `assets`.

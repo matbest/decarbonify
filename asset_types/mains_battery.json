@@ -1,0 +1,46 @@
+{
+  "id": "mains_battery",
+  "label": "Mains battery (electric storage)",
+  "description": "Grid-connected battery. This simple template estimates emissions from round-trip losses (it does not model time-of-use or avoided generation mix).",
+  "inputs": [
+    {
+      "key": "annual_throughput_kwh",
+      "label": "Annual energy throughput",
+      "kind": "number",
+      "unit": "kWh/year",
+      "help": "Total energy discharged (or cycled) by the battery over a year."
+    },
+    {
+      "key": "roundtrip_efficiency",
+      "label": "Round-trip efficiency",
+      "kind": "number",
+      "unit": "fraction",
+      "default": 0.90,
+      "help": "Fraction (0–1). Used to estimate losses."
+    },
+    {
+      "key": "carbon_intensity_of_electricity",
+      "label": "Electricity carbon intensity",
+      "kind": "number",
+      "unit": "kgCO2e/kWh",
+      "default": 0.20,
+      "help": "Used to convert loss kWh into emissions."
+    }
+  ],
+  "outputs": [
+    {
+      "key": "annual_losses_kwh",
+      "label": "Estimated annual losses",
+      "kind": "number",
+      "unit": "kWh/year",
+      "formula": "annual_throughput_kwh * (1 / roundtrip_efficiency - 1)"
+    },
+    {
+      "key": "emissions_tco2e_per_year",
+      "label": "Emissions from losses",
+      "kind": "number",
+      "unit": "tCO2e/year",
+      "formula": "(annual_throughput_kwh * (1 / roundtrip_efficiency - 1) * carbon_intensity_of_electricity) / 1000"
+    }
+  ]
+}

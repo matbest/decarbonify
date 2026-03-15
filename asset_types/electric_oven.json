@@ -1,0 +1,31 @@
+{
+  "id": "electric_oven",
+  "label": "Electric oven",
+  "description": "Electric oven/cooker. Computes annual tCO2e from electricity use.",
+  "inputs": [
+    {
+      "key": "annual_electricity_kwh",
+      "label": "Annual electricity use",
+      "kind": "number",
+      "unit": "kWh/year",
+      "help": "Estimated annual electricity consumption attributable to this oven."
+    },
+    {
+      "key": "carbon_intensity_of_electricity",
+      "label": "Electricity carbon intensity",
+      "kind": "number",
+      "unit": "kgCO2e/kWh",
+      "default": 0.20,
+      "help": "Grid carbon intensity used to convert kWh into emissions."
+    }
+  ],
+  "outputs": [
+    {
+      "key": "emissions_tco2e_per_year",
+      "label": "Emissions",
+      "kind": "number",
+      "unit": "tCO2e/year",
+      "formula": "(annual_electricity_kwh * carbon_intensity_of_electricity) / 1000"
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "id": "ground_source_heat_pump",
+  "label": "Ground-source heat pump",
+  "description": "Ground-source heat pump (GSHP). Computes electricity input and annual tCO2e from delivered heat.",
+  "inputs": [
+    {
+      "key": "annual_heat_delivered_kwh_thermal",
+      "label": "Annual heat delivered",
+      "kind": "number",
+      "unit": "kWh(th)/year",
+      "help": "Total thermal heat delivered over a year (space heating and/or hot water as applicable)."
+    },
+    {
+      "key": "heat_pump_cop",
+      "label": "Heat pump COP",
+      "kind": "number",
+      "unit": "ratio",
+      "default": 4.0,
+      "help": "Coefficient of performance (heat out / electricity in)."
+    },
+    {
+      "key": "carbon_intensity_of_electricity",
+      "label": "Electricity carbon intensity",
+      "kind": "number",
+      "unit": "kgCO2e/kWh",
+      "default": 0.20,
+      "help": "Grid carbon intensity used to convert kWh into emissions."
+    }
+  ],
+  "outputs": [
+    {
+      "key": "annual_electricity_kwh",
+      "label": "Implied annual electricity input",
+      "kind": "number",
+      "unit": "kWh/year",
+      "formula": "annual_heat_delivered_kwh_thermal / heat_pump_cop"
+    },
+    {
+      "key": "emissions_tco2e_per_year",
+      "label": "Emissions",
+      "kind": "number",
+      "unit": "tCO2e/year",
+      "formula": "(annual_heat_delivered_kwh_thermal / heat_pump_cop) * carbon_intensity_of_electricity / 1000"
+    }
+  ]
+}

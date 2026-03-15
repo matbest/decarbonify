@@ -1,0 +1,23 @@
+{
+  "id": "refrigerator_freezer",
+  "label": "Fridge/freezer",
+  "description": "Refrigerator/freezer appliance. Computes annual tCO2e from electricity use.",
+  "inputs": [
+    {
+      "key": "annual_electricity_kwh",
+      "label": "Annual electricity use",
+      "kind": "number",
+      "unit": "kWh/year",
+      "help": "Use measured annual kWh if available; otherwise estimate from rating and duty cycle."
+    }
+  ],
+  "outputs": [
+    {
+      "key": "emissions_tco2e_per_year",
+      "label": "Emissions",
+      "kind": "number",
+      "unit": "tCO2e/year",
+      "formula": "(annual_electricity_kwh * carbon_intensity_of_electricity) / 1000"
+    }
+  ]
+}

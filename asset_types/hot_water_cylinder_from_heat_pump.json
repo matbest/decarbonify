@@ -1,0 +1,46 @@
+{
+  "id": "hot_water_cylinder_from_heat_pump",
+  "label": "Hot water cylinder (heated by heat pump)",
+  "description": "Hot water cylinder whose heat input is supplied by a heat pump. Computes electricity input and annual tCO2e from delivered hot water heat.",
+  "inputs": [
+    {
+      "key": "annual_hot_water_kwh_thermal",
+      "label": "Annual hot water heat delivered",
+      "kind": "number",
+      "unit": "kWh(th)/year",
+      "help": "Thermal energy delivered as hot water over a year (kWh thermal)."
+    },
+    {
+      "key": "heat_pump_cop",
+      "label": "Heat pump COP",
+      "kind": "number",
+      "unit": "ratio",
+      "default": 3.0,
+      "help": "Coefficient of performance (heat out / electricity in)."
+    },
+    {
+      "key": "carbon_intensity_of_electricity",
+      "label": "Electricity carbon intensity",
+      "kind": "number",
+      "unit": "kgCO2e/kWh",
+      "default": 0.20,
+      "help": "Grid carbon intensity used to convert kWh into emissions."
+    }
+  ],
+  "outputs": [
+    {
+      "key": "annual_electricity_kwh",
+      "label": "Implied annual electricity input",
+      "kind": "number",
+      "unit": "kWh/year",
+      "formula": "annual_hot_water_kwh_thermal / heat_pump_cop"
+    },
+    {
+      "key": "emissions_tco2e_per_year",
+      "label": "Emissions",
+      "kind": "number",
+      "unit": "tCO2e/year",
+      "formula": "(annual_hot_water_kwh_thermal / heat_pump_cop) * carbon_intensity_of_electricity / 1000"
+    }
+  ]
+}

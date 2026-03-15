@@ -1,0 +1,46 @@
+{
+  "id": "hot_water_cylinder_from_gas_boiler",
+  "label": "Hot water cylinder (heated by gas boiler)",
+  "description": "Hot water cylinder whose heat input is supplied by a gas boiler. Computes gas input and annual tCO2e from delivered hot water heat.",
+  "inputs": [
+    {
+      "key": "annual_hot_water_kwh_thermal",
+      "label": "Annual hot water heat delivered",
+      "kind": "number",
+      "unit": "kWh(th)/year",
+      "help": "Thermal energy delivered as hot water over a year (kWh thermal)."
+    },
+    {
+      "key": "boiler_efficiency",
+      "label": "Boiler efficiency",
+      "kind": "number",
+      "unit": "fraction",
+      "default": 0.85,
+      "help": "Fraction (0–1). Used to convert delivered heat to gas input energy."
+    },
+    {
+      "key": "gas_kgco2e_per_kwh",
+      "label": "Gas carbon intensity",
+      "kind": "number",
+      "unit": "kgCO2e/kWh",
+      "default": 0.184,
+      "help": "Override if you have a better factor for your region/supplier."
+    }
+  ],
+  "outputs": [
+    {
+      "key": "annual_gas_kwh",
+      "label": "Implied annual gas input",
+      "kind": "number",
+      "unit": "kWh/year",
+      "formula": "annual_hot_water_kwh_thermal / boiler_efficiency"
+    },
+    {
+      "key": "emissions_tco2e_per_year",
+      "label": "Emissions",
+      "kind": "number",
+      "unit": "tCO2e/year",
+      "formula": "(annual_hot_water_kwh_thermal / boiler_efficiency) * gas_kgco2e_per_kwh / 1000"
+    }
+  ]
+}

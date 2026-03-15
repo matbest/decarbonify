@@ -1,0 +1,31 @@
+{
+  "id": "gas_oven",
+  "label": "Gas oven",
+  "description": "Gas oven/cooker. Computes annual tCO2e from gas energy use.",
+  "inputs": [
+    {
+      "key": "annual_gas_kwh",
+      "label": "Annual gas use",
+      "kind": "number",
+      "unit": "kWh/year",
+      "help": "Estimated annual gas consumption attributable to this oven."
+    },
+    {
+      "key": "gas_kgco2e_per_kwh",
+      "label": "Gas carbon intensity",
+      "kind": "number",
+      "unit": "kgCO2e/kWh",
+      "default": 0.184,
+      "help": "Override if you have a better factor for your region/supplier."
+    }
+  ],
+  "outputs": [
+    {
+      "key": "emissions_tco2e_per_year",
+      "label": "Emissions",
+      "kind": "number",
+      "unit": "tCO2e/year",
+      "formula": "(annual_gas_kwh * gas_kgco2e_per_kwh) / 1000"
+    }
+  ]
+}

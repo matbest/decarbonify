@@ -467,7 +467,12 @@ def require_login(*, app_name: str = "Decarbonify") -> str:
 
     cfg = _get_google_config()
     if not _safe_str(cfg.get("client_id")) or not _safe_str(cfg.get("client_secret")) or not _safe_str(cfg.get("redirect_uri")):
-        st.error("Google auth is not configured. Set Streamlit Secrets: google.client_id, google.client_secret, google.redirect_uri")
+        st.error(
+            "Google auth is not configured.\n\n"
+            "Set Streamlit secrets in .streamlit/secrets.toml (copy from .streamlit/secrets.toml.example) with:\n"
+            "- [google].client_id\n- [google].client_secret\n- [google].redirect_uri\n\n"
+            "Or set env vars: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI."
+        )
         st.stop()
 
     user_email = current_user()
