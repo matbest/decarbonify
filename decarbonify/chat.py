@@ -7,52 +7,11 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from .portfolio_index import AssetNode
-from .portfolio_io import as_list, safe_str
+from .portfolio_io import as_list, ensure_asset_data_fields, ensure_asset_ontology_fields, safe_str
 from .ontology import display_kind
 from .portfolio_edit import add_child_asset, can_add_child, explain_disallowed_child_assets
 from .portfolio_io import ensure_asset_ids
-
-
-# Backward-compat shim: some deployments may not yet have ensure_asset_data_fields.
-try:
-    from .portfolio_io import ensure_asset_data_fields  # type: ignore
-except Exception:  # pragma: no cover
-    from typing import Any, Dict
-
-    def ensure_asset_data_fields(portfolio: Dict[str, Any]) -> None:  # type: ignore
-        assets = portfolio.get("assets")
-        if not isinstance(assets, list):
-            return
-        for asset in assets:
-            if not isinstance(asset, dict):
-                continue
-            fields = asset.get("data_fields")
-            if not isinstance(fields, dict):
-                fields = {}
-                asset["data_fields"] = fields
-            key = "emissions_tco2e_per_year"
-            entry = fields.get(key)
-            if not isinstance(entry, dict):
-                entry = {"label": "Emissions", "kind": "number", "unit": "tCO2e/year"}
-                fields[key] = entry
-            derived = entry.get("derived")
-            if not isinstance(derived, dict):
-                derived = {}
-                entry["derived"] = derived
-            derived.setdefault("value", None)
-            manual = entry.get("manual")
-            if not isinstance(manual, dict):
-                manual = {}
-                entry["manual"] = manual
-            manual.setdefault("value", None)
-
-
-# Backward-compat shim: some deployments may not yet have ensure_asset_ontology_fields.
-try:
-    from .portfolio_io import ensure_asset_ontology_fields  # type: ignore
-except Exception:  # pragma: no cover
-    def ensure_asset_ontology_fields(portfolio: Dict[str, Any]) -> None:  # type: ignore
-        return
+from .jsonish import parse_jsonish
 
 from .recommendations import openai_client_available
 
@@ -240,42 +199,7 @@ def llm_edit_selected_subtree(
         return "", portfolio_name
 
     def _parse_jsonish(text: str) -> Optional[Dict[str, Any]]:
-        """Best-effort JSON extraction.
-
-        The model is instructed to return strict JSON, but in practice it may wrap
-        JSON in prose or code fences.
-        """
-
-        s = (text or "").strip()
-        if not s:
-            return None
-
-        try:
-            v = json.loads(s)
-            return v if isinstance(v, dict) else None
-        except Exception:
-            pass
-
-        # ```json ... ``` or ``` ... ```
-        m = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", s, flags=re.IGNORECASE)
-        if m:
-            try:
-                v = json.loads(m.group(1))
-                return v if isinstance(v, dict) else None
-            except Exception:
-                pass
-
-        # Last-resort: try from first '{' to last '}'
-        i = s.find("{")
-        j = s.rfind("}")
-        if 0 <= i < j:
-            candidate = s[i : j + 1]
-            try:
-                v = json.loads(candidate)
-                return v if isinstance(v, dict) else None
-            except Exception:
-                pass
-        return None
+        return parse_jsonish(text)
 
     def _sanitize_asset_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         """Coerce/clean optional ontology fields without being destructive."""

@@ -8,6 +8,30 @@ DATA_FIELDS_KEY = "data_fields"
 EMISSIONS_KEY = "emissions_tco2e_per_year"
 
 
+def format_emissions_per_year(value_tco2e_per_year: float, *, unit: str = "auto") -> str:
+    """Format an emissions rate.
+
+    - Internal unit is tCO2e/year.
+    - If unit='auto', values with abs(v) < 1 are shown as kgCO2e/yr.
+    - Negative values are preserved (e.g. capture/sequestration).
+    """
+
+    v = float(value_tco2e_per_year)
+    sign = "-" if v < 0 else ""
+    av = abs(v)
+
+    u = (unit or "auto").strip().lower()
+    if u in {"kg", "kgco2e", "kgco2", "kilograms"}:
+        return f"{sign}{av * 1000:.0f} kgCO₂e/yr"
+    if u in {"t", "tco2e", "tco2", "tonnes", "tons"}:
+        return f"{sign}{av:.2f} tCO₂e/yr"
+
+    # auto
+    if av < 1.0:
+        return f"{sign}{av * 1000:.0f} kgCO₂e/yr"
+    return f"{sign}{av:.2f} tCO₂e/yr"
+
+
 def _as_float(value: Any) -> Optional[float]:
     if value is None:
         return None

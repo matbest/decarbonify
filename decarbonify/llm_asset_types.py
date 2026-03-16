@@ -2,43 +2,16 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from .portfolio_io import safe_str
 from .ontology import display_kind, search_text
 from .recommendations import openai_client_available
+from .jsonish import parse_jsonish
 
 
 def _parse_jsonish(text: str) -> Optional[Dict[str, Any]]:
-    s = (text or "").strip()
-    if not s:
-        return None
-
-    try:
-        v = json.loads(s)
-        return v if isinstance(v, dict) else None
-    except Exception:
-        pass
-
-    m = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", s, flags=re.IGNORECASE)
-    if m:
-        try:
-            v = json.loads(m.group(1))
-            return v if isinstance(v, dict) else None
-        except Exception:
-            pass
-
-    i = s.find("{")
-    j = s.rfind("}")
-    if 0 <= i < j:
-        try:
-            v = json.loads(s[i : j + 1])
-            return v if isinstance(v, dict) else None
-        except Exception:
-            return None
-
-    return None
+    return parse_jsonish(text)
 
 
 def _openai_client() -> Tuple[Optional[Any], Optional[str]]:

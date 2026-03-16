@@ -11,7 +11,7 @@ from .emissions import is_retired
 from .ontology import display_kind, hierarchy_category, normalize_core_type, normalize_energy_role
 from .portfolio_index import AssetNode
 from .portfolio_io import as_list, safe_str
-from .recommendations import heuristic_recommendations, recommendation_id
+from .recommendations import extract_recommendation_items, heuristic_recommendations, recommendation_id
 
 
 @lru_cache(maxsize=1)
@@ -223,7 +223,10 @@ def _asset_savings_tco2_per_year(asset: Dict[str, Any]) -> Tuple[float, float]:
     status = asset.get("recommendation_status")
     status_map = status if isinstance(status, dict) else {}
 
-    recs = heuristic_recommendations(asset)
+    # Match the detail view: prefer stored bundle/legacy recs if present.
+    recs = extract_recommendation_items(asset)
+    if not recs:
+        recs = heuristic_recommendations(asset)
     for r in recs:
         rid = recommendation_id(r)
         st0 = status_map.get(rid)

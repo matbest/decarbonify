@@ -12,6 +12,13 @@
       "kind": "number",
       "unit": "acres",
       "help": "Site area in acres (optional)."
+    },
+    {
+      "key": "area_ha",
+      "label": "Site area",
+      "kind": "number",
+      "unit": "ha",
+      "help": "Site area in hectares (optional)."
     }
   ],
   "outputs": [

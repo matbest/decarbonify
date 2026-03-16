@@ -8,49 +8,7 @@ from typing import Any, Dict, List
 import streamlit as st
 
 from .portfolio_index import AssetNode, iter_assets_tree
-from .portfolio_io import as_list, ensure_asset_ids
-
-
-# Backward-compat shim: some deployments may not yet have ensure_asset_data_fields.
-try:
-    from .portfolio_io import ensure_asset_data_fields  # type: ignore
-except Exception:  # pragma: no cover
-    def ensure_asset_data_fields(portfolio: Dict[str, Any]) -> None:  # type: ignore
-        def walk(assets: Any) -> None:
-            for asset in as_list(assets):
-                if not isinstance(asset, dict):
-                    continue
-                fields = asset.get("data_fields")
-                if not isinstance(fields, dict):
-                    fields = {}
-                    asset["data_fields"] = fields
-                key = "emissions_tco2e_per_year"
-                entry = fields.get(key)
-                if not isinstance(entry, dict):
-                    entry = {"label": "Emissions", "kind": "number", "unit": "tCO2e/year"}
-                    fields[key] = entry
-                derived = entry.get("derived")
-                if not isinstance(derived, dict):
-                    derived = {}
-                    entry["derived"] = derived
-                derived.setdefault("value", None)
-                manual = entry.get("manual")
-                if not isinstance(manual, dict):
-                    manual = {}
-                    entry["manual"] = manual
-                manual.setdefault("value", None)
-                walk(asset.get("assets"))
-
-        walk(portfolio.get("assets"))
-
-
-# Backward-compat shim: some deployments may not yet have ensure_asset_ontology_fields.
-try:
-    from .portfolio_io import ensure_asset_ontology_fields  # type: ignore
-except Exception:  # pragma: no cover
-    def ensure_asset_ontology_fields(portfolio: Dict[str, Any]) -> None:  # type: ignore
-        return
-from .portfolio_io import safe_str
+from .portfolio_io import as_list, ensure_asset_data_fields, ensure_asset_ids, ensure_asset_ontology_fields, safe_str
 from . import auth
 from .portfolio_edit import (
     RemovedAsset,
@@ -69,6 +27,7 @@ from .emissions import (
     EMISSIONS_KEY,
     emissions_field_help_text,
     effective_emissions_tco2e_per_year,
+    format_emissions_per_year,
     get_derived_value,
     get_manual_value,
     iter_asset_and_descendants,
@@ -149,6 +108,13 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
                     st.session_state.pop(rename_key, None)
                     st.session_state[rename_toggle_key] = False
 
+    def _invalidate_sidebar_recommendation_totals_cache() -> None:
+        # Sidebar caches subtree recommendation totals keyed by portfolio_fp.
+        # Recommendation status edits are in-memory and may not change portfolio_fp,
+        # so clear the cache to force recompute.
+        st.session_state.pop("sb_subtree_totals_fp", None)
+        st.session_state.pop("sb_subtree_totals", None)
+
     def _regenerate_recommendations_for_subtree() -> None:
         if not asset_id:
             return
@@ -163,6 +129,7 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
                 a.pop("llm_recommendations", None)
 
         # Refresh the tree/UI without autosaving.
+        _invalidate_sidebar_recommendation_totals_cache()
         st.session_state.asset_tree_initialized = False
         st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
         st.rerun()
@@ -295,7 +262,11 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
         status_map = root_asset.get("recommendation_status")
         status_map = status_map if isinstance(status_map, dict) else {}
 
-        for r in heuristic_recommendations(root_asset):
+        recs0 = extract_recommendation_items(root_asset)
+        if not recs0:
+            recs0 = heuristic_recommendations(root_asset)
+
+        for r in recs0:
             rid = recommendation_id(r)
             st0 = status_map.get(rid)
             if isinstance(st0, dict) and bool(st0.get("ignored")):
@@ -378,7 +349,7 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
         if eff is not None:
             st.metric(
                 "Emissions (this asset)",
-                f"{float(eff):.2f} tCO₂e/yr",
+                format_emissions_per_year(float(eff), unit="auto"),
                 help=f"Equivalent: {float(eff) * 1000:.0f} kgCO₂e/yr.",
             )
 
@@ -386,7 +357,7 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
         if contributing > 0:
             st.metric(
                 "Total CO₂e for this asset + children (t/year)",
-                f"{total_tco2e:.2f} tCO₂e/yr",
+                format_emissions_per_year(float(total_tco2e), unit="auto"),
                 help=(
                     f"Sum of selected asset + {visited - 1} descendants. "
                     f"Values present for {contributing} of {visited} assets; overrides used for {overrides_used} assets."
@@ -399,9 +370,9 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
         done_s, possible_s = _subtree_savings_tco2_per_year(asset)
         g1, g2 = st.columns(2, gap="small")
         with g1:
-            st.metric("Potential gains (t/year)", f"{possible_s:.2f}")
-        with g2:
             st.metric("Actualised gains (t/year)", f"{done_s:.2f}")
+        with g2:
+            st.metric("Potential gains (t/year)", f"{possible_s:.2f}")
     with right_panel:
         st.markdown("**Data**")
 
@@ -629,6 +600,10 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
                     if desc:
                         st.caption(desc)
 
+                    # Auto compute outputs whenever inputs change.
+                    # Streamlit reruns on Enter/commit; we use change detection to recompute.
+                    auto_compute = True
+
                     # Render input widgets
                     inputs = type_def.get("inputs")
                     inputs_list: List[Dict[str, Any]] = []
@@ -641,6 +616,7 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
                         asset[DATA_FIELDS_KEY] = fields
 
                     missing_for_ai: List[str] = []
+                    inputs_changed = False
 
                     if inputs_list:
                         st.markdown("**Inputs**")
@@ -710,6 +686,7 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
                         with row_r:
                             widget_key = f"type_input_{asset_id}_{k}"
                             if kind == "number":
+                                prev_val = manual_val
                                 default = "" if manual_val is None else str(manual_val)
                                 # Streamlit widget state persists across reruns. If an external update (e.g. AI intake)
                                 # sets manual_val but the widget previously existed as an empty string, the empty
@@ -725,76 +702,93 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
                                         manual["value"] = float(s.replace(",", ""))
                                     except Exception:
                                         st.warning(f"Invalid number for {k}.")
+                                        # Don't trigger auto-compute when input is invalid.
+                                        prev_val = manual.get("value")
+                                if prev_val != manual.get("value"):
+                                    inputs_changed = True
                             elif kind == "boolean":
+                                prev_val = manual_val
                                 manual["value"] = bool(
                                     st.checkbox("", value=bool(manual_val), key=widget_key, label_visibility="collapsed")
                                 )
+                                if prev_val != manual.get("value"):
+                                    inputs_changed = True
                             else:
+                                prev_val = manual_val
                                 default = "" if manual_val is None else str(manual_val)
                                 if manual_val is not None and st.session_state.get(widget_key) in {"", None}:
                                     st.session_state[widget_key] = default
                                 manual["value"] = st.text_input("", value=default, key=widget_key, label_visibility="collapsed")
+                                if prev_val != manual.get("value"):
+                                    inputs_changed = True
 
                     # AI suggestions
                     ai_disabled = not openai_client_available()
-                    ai_help_cols = st.columns([0.5, 0.5], gap="small")
-                    with ai_help_cols[0]:
-                        if st.button(
-                            "AI: suggest missing values",
-                            use_container_width=True,
-                            disabled=ai_disabled or (not missing_for_ai),
-                            key=f"asset_type_ai_suggest::{asset_id}",
-                            help=None if not ai_disabled else "Requires AI (set OPENAI_API_KEY).",
-                        ):
-                            with st.spinner("Asking AI..."):
-                                suggested, reply = suggest_asset_type_input_values(
-                                    portfolio=portfolio,
-                                    asset=asset,
-                                    type_def=type_def,
-                                    only_missing_keys=missing_for_ai,
-                                )
-                            asset["llm_asset_type_inputs_reply"] = reply
+                    if st.button(
+                        "AI: suggest missing values",
+                        use_container_width=True,
+                        disabled=ai_disabled or (not missing_for_ai),
+                        key=f"asset_type_ai_suggest::{asset_id}",
+                        help=None if not ai_disabled else "Requires AI (set OPENAI_API_KEY).",
+                    ):
+                        with st.spinner("Asking AI..."):
+                            suggested, reply = suggest_asset_type_input_values(
+                                portfolio=portfolio,
+                                asset=asset,
+                                type_def=type_def,
+                                only_missing_keys=missing_for_ai,
+                            )
+                        asset["llm_asset_type_inputs_reply"] = reply
 
-                            for k, v in (suggested or {}).items():
-                                ks = safe_str(k).strip()
-                                if not ks:
-                                    continue
-                                entry = fields.get(ks)
-                                if not isinstance(entry, dict):
-                                    continue
-                                manual = entry.get("manual")
-                                if isinstance(manual, dict) and manual.get("value") is not None:
-                                    continue
-                                derived = entry.get("derived")
-                                if not isinstance(derived, dict):
-                                    derived = {}
-                                    entry["derived"] = derived
-                                derived["value"] = v
-                                derived["source"] = "ai"
-                                derived["notes"] = "AI suggestion (may be wrong). Review and override manually if needed."
+                        for k, v in (suggested or {}).items():
+                            ks = safe_str(k).strip()
+                            if not ks:
+                                continue
+                            entry = fields.get(ks)
+                            if not isinstance(entry, dict):
+                                continue
+                            manual = entry.get("manual")
+                            if isinstance(manual, dict) and manual.get("value") is not None:
+                                continue
+                            derived = entry.get("derived")
+                            if not isinstance(derived, dict):
+                                derived = {}
+                                entry["derived"] = derived
+                            derived["value"] = v
+                            derived["source"] = "ai"
+                            derived["notes"] = "AI suggestion (may be wrong). Review and override manually if needed."
 
-                            st.session_state.asset_tree_initialized = False
-                            st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
-                            st.rerun()
+                        # Trigger auto-compute on next rerun so outputs reflect AI suggestions.
+                        st.session_state[f"asset_type_auto_compute_pending::{asset_id}"] = True
 
-                    with ai_help_cols[1]:
-                        if st.button(
-                            "Compute outputs",
-                            use_container_width=True,
-                            key=f"asset_type_compute::{asset_id}",
-                        ):
-                            computed, missing, errors = compute_asset_type_outputs(asset=asset, type_def=type_def, portfolio=portfolio)
-                            if errors:
-                                st.error("; ".join(errors))
-                            if missing:
-                                st.warning("Missing inputs: " + ", ".join(missing))
-                            if computed:
-                                persist_computed_outputs(asset=asset, type_def=type_def, computed=computed)
-                                st.success("Updated computed fields.")
+                        st.session_state.asset_tree_initialized = False
+                        st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
+                        st.rerun()
 
+                    # Auto compute (runs after inputs render).
+                    pending_auto = bool(st.session_state.pop(f"asset_type_auto_compute_pending::{asset_id}", False))
+                    if auto_compute and (inputs_changed or pending_auto):
+                        computed, missing, errors = compute_asset_type_outputs(asset=asset, type_def=type_def, portfolio=portfolio)
+                        st.session_state[f"asset_type_auto_compute_last::{asset_id}"] = {
+                            "missing": missing,
+                            "errors": errors,
+                            "computed_keys": sorted(list(computed.keys())),
+                        }
+                        if computed:
+                            changed = persist_computed_outputs(asset=asset, type_def=type_def, computed=computed)
+                            if changed:
                                 st.session_state.asset_tree_initialized = False
                                 st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
                                 st.rerun()
+
+                    last = st.session_state.get(f"asset_type_auto_compute_last::{asset_id}")
+                    if isinstance(last, dict):
+                        missing = last.get("missing") if isinstance(last.get("missing"), list) else []
+                        errors = last.get("errors") if isinstance(last.get("errors"), list) else []
+                        if errors:
+                            st.caption("Missing/invalid inputs for outputs: " + "; ".join([safe_str(e) for e in errors if safe_str(e)]))
+                        elif missing:
+                            st.caption("Missing inputs for outputs: " + ", ".join([safe_str(m) for m in missing if safe_str(m)]))
 
                     reply = safe_str(asset.get("llm_asset_type_inputs_reply"))
                     if reply:
@@ -846,6 +840,7 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
             status["applied"] = False
 
         status_map.pop(rec_key, None)
+        _invalidate_sidebar_recommendation_totals_cache()
         _refresh_only()
 
     # --- Bottom panel: full-width recommendations ---
@@ -892,7 +887,7 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
             st.session_state[done_widget_key] = False
             status["done"] = False
             status["applied"] = bool(status.get("applied"))
-
+        _invalidate_sidebar_recommendation_totals_cache()
         st.rerun()
 
     def _apply_rec_action(*, rec: Dict[str, Any], rec_key: str) -> None:
@@ -907,6 +902,8 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
             status_map[rec_key] = status
 
         status["done"] = done
+
+        _invalidate_sidebar_recommendation_totals_cache()
 
         action = safe_str(rec.get("action") or "other").lower()
         status["action"] = action

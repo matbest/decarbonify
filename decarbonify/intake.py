@@ -5,6 +5,7 @@ import os
 import re
 import uuid
 import difflib
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -14,89 +15,271 @@ from .portfolio_index import AssetNode, index_portfolio
 from .portfolio_io import as_list, ensure_asset_data_fields, ensure_asset_ids, ensure_asset_ontology_fields, safe_str
 from .recommendations import openai_client_available
 from .ontology import hierarchy_category
+from .jsonish import parse_jsonish
 
 
-def _escape_newlines_in_json_strings(s: str) -> str:
-    """Escape raw newlines inside JSON strings.
+_TEMPLATE_INPUT_ALIASES: Dict[str, Dict[str, List[str]]] = {
+    # Aliases that LLMs commonly invent for site area.
+    "place_site": {
+        "area_acres": [
+            "site_area_acres",
+            "site_area_acre",
+            "site_acres",
+            "siteareaacres",
+            "site_area",
+        ],
+        "area_ha": [
+            "site_area_hectares",
+            "site_area_hectare",
+            "site_area_ha",
+            "site_ha",
+            "siteareahectares",
+            "site_area_hec",
+        ],
+    },
+    "land_field": {
+        "area_ha": ["site_area_hectares", "site_area_ha", "land_area_ha", "area_hectares"],
+    },
+}
 
-    LLMs sometimes emit literal newlines within quoted strings, which is invalid JSON.
-    This best-effort sanitizer makes such output parseable without changing semantics.
-    """
 
+def _norm_key(k: str) -> str:
+    s = safe_str(k).strip().lower()
+    if not s:
+        return ""
+    s = re.sub(r"[^a-z0-9]+", "", s)
+    return s
+
+
+def _input_keys(type_def: Dict[str, Any]) -> List[str]:
+    inputs = type_def.get("inputs")
+    if not isinstance(inputs, list):
+        return []
     out: List[str] = []
-    in_string = False
-    escape = False
-
-    for ch in s:
-        if escape:
-            out.append(ch)
-            escape = False
+    for item in inputs:
+        if not isinstance(item, dict):
             continue
+        k = safe_str(item.get("key")).strip()
+        if k:
+            out.append(k)
+    return out
 
-        if ch == "\\":
-            out.append(ch)
-            escape = True
-            continue
 
-        if ch == '"':
-            out.append(ch)
-            in_string = not in_string
-            continue
-
-        if in_string and ch == "\n":
-            out.append("\\n")
-            continue
-        if in_string and ch == "\r":
-            out.append("\\r")
-            continue
-
-        out.append(ch)
-
-    return "".join(out)
+def _alias_to_input_key(*, type_id: str, candidate_key: str, input_key: str) -> bool:
+    aliases = _TEMPLATE_INPUT_ALIASES.get(type_id, {}).get(input_key, [])
+    c = _norm_key(candidate_key)
+    if not c:
+        return False
+    if c == _norm_key(input_key):
+        return True
+    for a in aliases:
+        if c == _norm_key(a):
+            return True
+    return False
 
 
 def _parse_jsonish(text: str) -> Optional[Dict[str, Any]]:
-    s = (text or "").strip()
+    return parse_jsonish(text)
+
+
+def _norm_text(text: str) -> str:
+    """Lowercase, de-accent, and collapse whitespace for robust keyword checks."""
+
+    s = safe_str(text)
     if not s:
+        return ""
+    try:
+        s = unicodedata.normalize("NFKD", s)
+        s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    except Exception:
+        pass
+    s = s.lower()
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _mixed_use_space_assets_from_text(text: str) -> List[Dict[str, Any]]:
+    """Draft obvious sub-spaces from listing text.
+
+    Intentionally conservative: only returns items when the text explicitly mentions them.
+    """
+
+    t = _norm_text(text)
+    if not t:
+        return []
+
+    has_residential = bool(
+        re.search(
+            r"\b(residential accommodation|residential|bedroomed?|bed\s*rooms?|apartment|flat|dwelling)\b",
+            t,
+            flags=re.IGNORECASE,
+        )
+    )
+    has_cafe = bool(re.search(r"\b(cafe|caf[e\u00e9]|coffee\s*shop)\b", t, flags=re.IGNORECASE))
+    has_kitchen = bool(re.search(r"\b(commercial\s+kitchen|kitchen)\b", t, flags=re.IGNORECASE))
+
+    # Require at least one explicit space keyword.
+    if not (has_residential or has_cafe or has_kitchen):
+        return []
+
+    def _bedroom_range(txt: str) -> tuple[int, int] | None:
+        # Examples: "2/3 bedroomed", "2-3 bedrooms", "2 to 3 bed"
+        m = re.search(r"\b([0-9]{1,2})\s*(?:/|\-|to)\s*([0-9]{1,2})\s*bed", txt, flags=re.IGNORECASE)
+        if m:
+            try:
+                a = int(safe_str(m.group(1)))
+                b = int(safe_str(m.group(2)))
+                if 0 < a <= 10 and 0 < b <= 10:
+                    return (min(a, b), max(a, b))
+            except Exception:
+                return None
+        m2 = re.search(r"\b([0-9]{1,2})\s*bed", txt, flags=re.IGNORECASE)
+        if m2:
+            try:
+                a2 = int(safe_str(m2.group(1)))
+                if 0 < a2 <= 10:
+                    return (a2, a2)
+            except Exception:
+                return None
         return None
 
-    def _try_parse(candidate: str) -> Optional[Dict[str, Any]]:
-        c = (candidate or "").strip()
-        if not c:
-            return None
-        c = _escape_newlines_in_json_strings(c)
+    bed_rng = _bedroom_range(t) if has_residential else None
+    out: List[Dict[str, Any]] = []
 
-        # Allow trailing text after JSON by decoding a prefix.
-        try:
-            decoder = json.JSONDecoder()
-            obj, _idx = decoder.raw_decode(c)
-            return obj if isinstance(obj, dict) else None
-        except Exception:
-            pass
+    if has_cafe:
+        out.append(
+            {
+                "apply_template_id": "place_room",
+                "asset": {
+                    "name": "Café",
+                    "core_type": "place",
+                    "subtype": "room",
+                    "description": "Drafted from listing text (café mentioned).",
+                },
+            }
+        )
+    if has_kitchen:
+        out.append(
+            {
+                "apply_template_id": "place_room",
+                "asset": {
+                    "name": "Commercial kitchen" if "commercial kitchen" in t else "Kitchen",
+                    "core_type": "place",
+                    "subtype": "room",
+                    "description": "Drafted from listing text (kitchen mentioned).",
+                },
+            }
+        )
+    if has_residential:
+        unit_asset: Dict[str, Any] = {
+            "name": "Residential accommodation",
+            "core_type": "place",
+            "subtype": "unit",
+            "description": "Drafted from listing text (residential accommodation mentioned).",
+        }
+        attrs: Dict[str, Any] = {}
+        if bed_rng:
+            attrs["bedrooms_min"] = int(bed_rng[0])
+            attrs["bedrooms_max"] = int(bed_rng[1])
+        if attrs:
+            unit_asset["attributes"] = attrs
 
-        try:
-            v = json.loads(c)
-            return v if isinstance(v, dict) else None
-        except Exception:
-            return None
+        # If we know at least a minimum bedroom count, draft those bedrooms as child rooms.
+        if bed_rng and bed_rng[0] > 0:
+            unit_asset["assets"] = [
+                {
+                    "name": f"Bedroom {i}",
+                    "core_type": "place",
+                    "subtype": "room",
+                    "description": "Drafted from listing text (bedroom count mentioned).",
+                }
+                for i in range(1, int(bed_rng[0]) + 1)
+            ]
 
-    v0 = _try_parse(s)
-    if isinstance(v0, dict):
-        return v0
+        out.append({"apply_template_id": "place_unit", "asset": unit_asset})
 
-    # ```json ... ``` or ``` ... ```
-    m = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", s, flags=re.IGNORECASE)
-    if m:
-        v1 = _try_parse(m.group(1))
-        return v1 if isinstance(v1, dict) else None
+    return out
 
-    # Try to grab the first {...} block.
-    m2 = re.search(r"(\{[\s\S]*\})", s)
-    if m2:
-        v2 = _try_parse(m2.group(1))
-        return v2 if isinstance(v2, dict) else None
 
-    return None
+def _is_room_like_asset(asset: Dict[str, Any]) -> bool:
+    return safe_str(asset.get("subtype")).strip().lower() == "room"
+
+
+def _is_room_like_op(op: Dict[str, Any]) -> bool:
+    tmpl = safe_str(op.get("apply_template_id") or "").strip()
+    if tmpl == "place_room":
+        return True
+    asset0 = op.get("asset") if isinstance(op.get("asset"), dict) else {}
+    return isinstance(asset0, dict) and _is_room_like_asset(asset0)
+
+
+def _is_building_like_op(op: Dict[str, Any]) -> bool:
+    tmpl = safe_str(op.get("apply_template_id") or "").strip()
+    if tmpl == "place_building":
+        return True
+    asset0 = op.get("asset") if isinstance(op.get("asset"), dict) else {}
+    return isinstance(asset0, dict) and safe_str(asset0.get("subtype")).strip().lower() == "building"
+
+
+def _reparent_room_ops_to_building(ops: List[Dict[str, Any]]) -> bool:
+    """Fix common LLM mistake: rooms nested under rooms.
+
+    Reparents room-like ops upwards by following parent_ref chains until the parent
+    is not room-like. If there is exactly one building op, unparented rooms attach
+    to that building.
+    """
+
+    if not ops:
+        return False
+
+    ref_to_op: Dict[str, Dict[str, Any]] = {}
+    building_refs: List[str] = []
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        r = safe_str(op.get("ref") or "").strip()
+        if r:
+            ref_to_op[r] = op
+        if _is_building_like_op(op):
+            if r:
+                building_refs.append(r)
+
+    default_bld_ref = building_refs[0] if len(building_refs) == 1 else ""
+
+    changed = False
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        if safe_str(op.get("op")).strip().lower() != "add_asset":
+            continue
+        if not _is_room_like_op(op):
+            continue
+        # Respect explicit parent_id (existing asset id) if present.
+        if safe_str(op.get("parent_id") or "").strip():
+            continue
+
+        pref = safe_str(op.get("parent_ref") or "").strip()
+        if not pref:
+            if default_bld_ref:
+                op["parent_ref"] = default_bld_ref
+                changed = True
+            continue
+
+        # If parent_ref points to another room op, climb.
+        cur = pref
+        seen: set[str] = set()
+        while cur and cur in ref_to_op and _is_room_like_op(ref_to_op[cur]) and cur not in seen:
+            seen.add(cur)
+            cur = safe_str(ref_to_op[cur].get("parent_ref") or "").strip()
+
+        if cur and cur != pref:
+            op["parent_ref"] = cur
+            changed = True
+        elif (not cur) and default_bld_ref and default_bld_ref != pref:
+            op["parent_ref"] = default_bld_ref
+            changed = True
+
+    return changed
 
 
 def _asset_nodes_summary(nodes: List[AssetNode], *, max_items: int = 120) -> str:
@@ -114,11 +297,17 @@ def _asset_types_summary(*, max_items: int = 120) -> str:
     items = list_asset_type_summaries()
     lines: List[str] = []
     for s in items[:max_items]:
+        # Include input keys to help the LLM choose correct manual_fields keys.
+        td = load_asset_type(s.id)
+        keys = _input_keys(td) if isinstance(td, dict) else []
+        keys_txt = ""
+        if keys:
+            keys_txt = " (inputs: " + ", ".join(keys[:6]) + (")" if len(keys) <= 6 else ", …)")
         desc = (s.description or "").strip()
         if desc:
-            lines.append(f"- {s.id}: {s.label} — {desc}")
+            lines.append(f"- {s.id}: {s.label}{keys_txt} — {desc}")
         else:
-            lines.append(f"- {s.id}: {s.label}")
+            lines.append(f"- {s.id}: {s.label}{keys_txt}")
     if len(items) > max_items:
         lines.append(f"- ... ({len(items) - max_items} more)")
     return "\n".join(lines)
@@ -412,6 +601,76 @@ def llm_draft_intake_ops(
         heuristic["open_questions"] = qs
         return heuristic
 
+    # If the text clearly describes mixed-use spaces but the LLM didn't structure them,
+    # inject child rooms under the first drafted building.
+    try:
+        spaces = _mixed_use_space_assets_from_text(text_trimmed)
+        if spaces and isinstance(out.get("ops"), list):
+            llm_ops2: List[Dict[str, Any]] = out.get("ops")  # type: ignore[assignment]
+
+            def _find_first_building_ref(ops0: List[Dict[str, Any]]) -> str:
+                for op0 in ops0:
+                    if safe_str(op0.get("op")).strip().lower() != "add_asset":
+                        continue
+                    tmpl = safe_str(op0.get("apply_template_id") or "").strip()
+                    asset0 = op0.get("asset") if isinstance(op0.get("asset"), dict) else {}
+                    subtype = safe_str(asset0.get("subtype") or "").strip().lower()
+                    if tmpl == "place_building" or subtype == "building":
+                        ref0 = safe_str(op0.get("ref") or "").strip()
+                        if not ref0:
+                            ref0 = _unique_ref(ops0, base="tmp_bld")
+                            op0["ref"] = ref0
+                        return ref0
+                return ""
+
+            bld_ref = _find_first_building_ref(llm_ops2)
+            if bld_ref:
+                # De-dupe against already drafted room assets.
+                existing_names = set()
+                for op0 in llm_ops2:
+                    if safe_str(op0.get("op")).strip().lower() != "add_asset":
+                        continue
+                    asset0 = op0.get("asset") if isinstance(op0.get("asset"), dict) else {}
+                    nm = _norm_text(asset0.get("name") if isinstance(asset0, dict) else "")
+                    if nm:
+                        existing_names.add(nm)
+
+                injected2: List[Dict[str, Any]] = []
+                for spec in spaces:
+                    asset_payload = spec.get("asset") if isinstance(spec, dict) else None
+                    if not isinstance(asset_payload, dict):
+                        continue
+                    nm = _norm_text(asset_payload.get("name"))
+                    if nm and nm in existing_names:
+                        continue
+                    injected2.append(
+                        {
+                            "op": "add_asset",
+                            "ref": _unique_ref(llm_ops2 + injected2, base="tmp_space"),
+                            "parent_ref": bld_ref,
+                            "apply_template_id": safe_str(spec.get("apply_template_id") or "place_room").strip() or "place_room",
+                            "asset": asset_payload,
+                        }
+                    )
+
+                if injected2:
+                    llm_ops2.extend(injected2)
+                    out["notes"] = (safe_str(out.get("notes")) + "\nAdded mixed-use spaces from heuristic text scan.").strip()
+                    out["assumptions"] = as_list(out.get("assumptions")) + [
+                        "Text mentioned café/kitchen/residential use; added those as child room assets under the building.",
+                    ]
+    except Exception:
+        pass
+
+    # Final cleanup: avoid rooms nested under rooms.
+    try:
+        if isinstance(out.get("ops"), list):
+            llm_ops3: List[Dict[str, Any]] = out.get("ops")  # type: ignore[assignment]
+            if _reparent_room_ops_to_building(llm_ops3):
+                out["notes"] = (safe_str(out.get("notes")) + "\nRe-parented rooms to avoid room-in-room nesting.").strip()
+    except Exception:
+        pass
+
     return out
 
 
@@ -475,25 +734,62 @@ def heuristic_intake_ops(
         return {"status": "empty", "ops": [], "open_questions": [], "assumptions": [], "notes": ""}
 
     acres = _extract_float(t, r"\b([0-9]+(?:\.[0-9]+)?)\s*acres?\b")
+    hectares = (
+        _extract_float(t, r"\b([0-9]+(?:\.[0-9]+)?)\s*hectares?\b")
+        or _extract_float(t, r"\b([0-9]+(?:\.[0-9]+)?)\s*ha\b")
+    )
+    if acres is None and hectares is not None:
+        # 1 ha = 2.47105381 acres
+        acres = float(hectares) * 2.47105381
     mva = _extract_float(t, r"\b([0-9]+(?:\.[0-9]+)?)\s*mva\b")
     buildings_n = (
         _extract_int(t, r"\bcampus\s+of\s+([a-z0-9]+)\s+buildings\b")
-        or _extract_int(t, r"\b([0-9]+)\s+buildings\b")
+        or _extract_int(t, r"\b([a-z0-9]+)\s+buildings\b")
+        # Treat 'units' as buildings for portfolio structure.
+        or _extract_int(t, r"\bcompris(?:e|es|ing)\s+([a-z0-9]+)\s+(?:ground\s+floor\s+)?(?:trade\s+counter\/motor\s+trade\s+)?units\b")
+        or _extract_int(t, r"\b(?:comprises|comprised\s+of|comprising|arranged\s+as)\s+(?:of\s+)?([a-z0-9]+)\s+(?:industrial\s+)?units\b")
+        or _extract_int(t, r"\b([a-z0-9]+)\s+(?:industrial\s+)?units\b")
     )
     gia_sqft = _extract_float(t, r"\bGIA\s+of\s+([0-9][0-9,]*)\s*sq\s*ft\b")
+    total_sqft = _extract_float(t, r"\btotal(?:ling|s)?\s*([0-9][0-9,]*)\s*sq\s*ft\b")
+    if total_sqft is None:
+        total_sqft = _extract_float(t, r"\b([0-9][0-9,]*)\s*sq\s*ft\b")
 
-    # Location: "situated in X" or "in X" (keep it short)
+    total_sqm = _extract_float(t, r"\b([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:sq\s*m|sqm|m2|m\u00b2)\b")
+    if total_sqm is None:
+        # Common formatting: "190 sq m" (space separated)
+        total_sqm = _extract_float(t, r"\b([0-9][0-9,]*(?:\.[0-9]+)?)\s*sq\s*m\b")
+
+    # Location: "situated in X" or other simple place patterns (keep it short)
     loc = ""
     m = re.search(r"\bsituated\s+in\s+([^\n,]+)", t, flags=re.IGNORECASE)
     if m:
         loc = safe_str(m.group(1)).strip()
+    if not loc:
+        # e.g. "off Stratford Road, Wolverton" / "along Stratford Road" / "in Wolverton"
+        m3 = re.search(r"\boff\s+([^\n]+?)\b", t, flags=re.IGNORECASE)
+        if m3:
+            loc = safe_str(m3.group(1)).strip().strip(" .")
+    if not loc:
+        m4 = re.search(r"\balong\s+([^\n]+?)\b", t, flags=re.IGNORECASE)
+        if m4:
+            loc = safe_str(m4.group(1)).strip().strip(" .")
     if not loc:
         m2 = re.search(r"\bin\s+(bletchley|milton\s+keynes)\b", t, flags=re.IGNORECASE)
         if m2:
             loc = safe_str(m2.group(1)).strip()
 
     # If we don't have any strong signals, don't fabricate ops.
-    if acres is None and buildings_n is None and gia_sqft is None and mva is None:
+    if (
+        acres is None
+        and buildings_n is None
+        and gia_sqft is None
+        and total_sqft is None
+        and total_sqm is None
+        and mva is None
+        and hectares is None
+        and not _mixed_use_space_assets_from_text(t)
+    ):
         return {"status": "no_signals", "ops": [], "open_questions": [], "assumptions": [], "notes": ""}
 
     parent_id = safe_str(selected_node.node_id) if selected_node else ""
@@ -507,6 +803,8 @@ def heuristic_intake_ops(
     if acres is not None:
         # 1 acre = 0.404685642 ha
         area_ha = float(acres) * 0.404685642
+        if hectares is not None:
+            area_ha = float(hectares)
         land_ref = "tmp_land"
         land_name = "Land"
         if loc:
@@ -552,11 +850,21 @@ def heuristic_intake_ops(
     if acres is not None:
         site_attrs["area_acres"] = float(acres)
         assumptions.append("Recorded the freehold acreage on the site attributes.")
+    if hectares is not None:
+        site_attrs["area_ha"] = float(hectares)
     if mva is not None:
         site_attrs["incoming_power_mva"] = float(mva)
     if gia_sqft is not None:
         site_attrs["campus_gia_sqft"] = float(gia_sqft)
         assumptions.append("Recorded the stated GIA on the site (not split per building).")
+    elif total_sqft is not None and buildings_n is not None:
+        # Common listing phrasing: "3 industrial units totalling 10,500 sq ft"
+        site_attrs["campus_gia_sqft"] = float(total_sqft)
+        assumptions.append("Recorded the stated total floor area on the site (not split per unit).")
+
+    if total_sqm is not None:
+        # Not currently a template input, but keep it for later mapping.
+        site_attrs["campus_gia_sqm"] = float(total_sqm)
 
     ops.append(
         {
@@ -572,16 +880,24 @@ def heuristic_intake_ops(
                 "location": loc,
                 "description": "Imported from listing text.",
                 "attributes": site_attrs,
-                "manual_fields": ({"area_acres": float(acres)} if acres is not None else {}),
+                "manual_fields": ({
+                    **({"area_acres": float(acres)} if acres is not None else {}),
+                    **({"area_ha": float(hectares)} if hectares is not None else {}),
+                }),
             },
         }
     )
 
     if buildings_n is None:
         # If the text mentions GIA but not count, still propose a single building.
-        if gia_sqft is not None and re.search(r"\bbuilding\b", t, flags=re.IGNORECASE):
+        if (gia_sqft is not None or total_sqft is not None or total_sqm is not None) and re.search(
+            r"\b(building|premises|property)\b", t, flags=re.IGNORECASE
+        ):
             buildings_n = 1
             assumptions.append("No building count found; drafted a single building.")
+        elif _mixed_use_space_assets_from_text(t) and re.search(r"\b(building|premises|property)\b", t, flags=re.IGNORECASE):
+            buildings_n = 1
+            assumptions.append("Drafted a single building because the text describes internal uses (e.g. café/residential).")
 
     if buildings_n is not None:
         bn = max(1, min(int(buildings_n), 20))
@@ -595,7 +911,8 @@ def heuristic_intake_ops(
                     "parent_ref": site_ref,
                     "apply_template_id": "place_building",
                     "asset": {
-                        "name": f"Building {i}",
+                        # If the text called them units, prefer that label.
+                        "name": (f"Unit {i}" if re.search(r"\bunits?\b", t, flags=re.IGNORECASE) else f"Building {i}"),
                         "core_type": "place",
                         "subtype": "building",
                         "location": loc,
@@ -606,6 +923,40 @@ def heuristic_intake_ops(
 
         if bn > 1 and gia_sqft is not None:
             questions.append("Do you want to split the 68,353 sq ft GIA across the 3 buildings (and if so, how)?")
+
+        # If the text clearly describes mixed-use spaces, draft them under the first building.
+        # Keep it conservative: only when we drafted exactly one building.
+        if bn == 1:
+            spaces = _mixed_use_space_assets_from_text(t)
+            if spaces:
+                for j, spec in enumerate(spaces, start=1):
+                    asset_payload = spec.get("asset") if isinstance(spec, dict) else None
+                    if not isinstance(asset_payload, dict):
+                        continue
+                    ops.append(
+                        {
+                            "op": "add_asset",
+                            "ref": f"tmp_space_{j}",
+                            "parent_ref": "tmp_bld_1",
+                            "apply_template_id": safe_str(spec.get("apply_template_id") or "place_room").strip() or "place_room",
+                            "asset": asset_payload,
+                        }
+                    )
+
+                assumptions.append("Drafted obvious mixed-use spaces (café/kitchen/residential) under the building.")
+                questions.append("Do you want to split the stated floor area across café/kitchen/residential, or keep it as a building total?")
+                # If we saw a 2/3-bedroom style range, call it out.
+                if any(
+                    isinstance(spec, dict)
+                    and safe_str(spec.get("apply_template_id")).strip() == "place_unit"
+                    and isinstance((spec.get("asset") or {}).get("attributes"), dict)
+                    and "bedrooms_max" in (spec.get("asset") or {}).get("attributes")
+                    and "bedrooms_min" in (spec.get("asset") or {}).get("attributes")
+                    and (spec.get("asset") or {}).get("attributes", {}).get("bedrooms_min")
+                    != (spec.get("asset") or {}).get("attributes", {}).get("bedrooms_max")
+                    for spec in spaces
+                ):
+                    questions.append("The listing says '2/3 bedroom'. Is it 2 bedrooms or 3 bedrooms (and do you want them modeled as separate room assets)?")
 
     # Add obvious follow-ups.
     if loc:
@@ -716,6 +1067,8 @@ def _apply_template_input_values_from_attributes(
     if not isinstance(inputs, list):
         return
 
+    type_id = safe_str(type_def.get("id") or "").strip()
+
     manual_keys = set()
     if isinstance(manual_fields_payload, dict):
         manual_keys = {safe_str(k).strip() for k in manual_fields_payload.keys() if safe_str(k).strip()}
@@ -728,10 +1081,19 @@ def _apply_template_input_values_from_attributes(
             continue
         if key in manual_keys:
             continue
-        if key not in attrs:
+        # Accept either the exact key or known aliases.
+        src_key = ""
+        if key in attrs:
+            src_key = key
+        else:
+            for k2 in attrs.keys():
+                if _alias_to_input_key(type_id=type_id, candidate_key=safe_str(k2), input_key=key):
+                    src_key = safe_str(k2)
+                    break
+        if not src_key:
             continue
 
-        v = attrs.get(key)
+        v = attrs.get(src_key)
         kind = safe_str(item.get("kind") or "string").strip().lower()
         if kind == "number":
             nv = _coerce_numberish(v)
@@ -897,12 +1259,21 @@ def apply_intake_ops(
 
         # Apply manual fields (if any)
         manual_fields = clean.get("manual_fields")
+        type_id_for_alias = safe_str(td_for_inputs.get("id") if isinstance(td_for_inputs, dict) else "").strip()
         if isinstance(manual_fields, dict):
+            # Allow alias keys: if a manual_fields key matches a template input alias, store under the canonical key.
+            input_keys = _input_keys(td_for_inputs) if isinstance(td_for_inputs, dict) else []
             for k, v in manual_fields.items():
                 kk = safe_str(k).strip()
                 if not kk:
                     continue
-                _ensure_field_manual(new_asset, key=kk, value=v)
+                target = kk
+                if input_keys and kk not in input_keys:
+                    for ik in input_keys:
+                        if _alias_to_input_key(type_id=type_id_for_alias, candidate_key=kk, input_key=ik):
+                            target = ik
+                            break
+                _ensure_field_manual(new_asset, key=target, value=v)
 
         # If the LLM put input-ish values in attributes, copy them into template inputs.
         attrs_payload = clean.get("attributes")
@@ -930,6 +1301,8 @@ def apply_intake_ops(
         except Exception:
             picked_parent_id = desired_parent_id
 
+        inserted_parent_id = safe_str(picked_parent_id).strip()
+
         ok = False
         if safe_str(picked_parent_id).strip():
             ok = bool(add_child_asset(portfolio, parent_id=picked_parent_id, child_asset=new_asset))
@@ -955,8 +1328,25 @@ def apply_intake_ops(
                 continue
             child_ref = safe_str(child.get("ref")).strip()
             child_tmpl = safe_str(child.get("apply_template_id")).strip() or safe_str(child.get("asset_type_id")).strip()
+            # Avoid room -> room nesting: if the parent is a room and the child looks like a room,
+            # attach the child to the parent's parent (when possible).
+            child_parent_id = new_id
+            try:
+                parent_is_room = _is_room_like_asset(new_asset)
+                child_is_room = False
+                if child_tmpl == "place_room":
+                    child_is_room = True
+                else:
+                    c_subtype = safe_str(child.get("subtype") or "").strip().lower()
+                    if c_subtype == "room":
+                        child_is_room = True
+                if parent_is_room and child_is_room and inserted_parent_id:
+                    child_parent_id = inserted_parent_id
+            except Exception:
+                child_parent_id = new_id
+
             _child_ok, _child_msg = add_asset_recursive(
-                parent_id=new_id,
+                parent_id=child_parent_id,
                 parent_ref="",
                 ref=child_ref,
                 apply_template_id=child_tmpl,
@@ -1029,11 +1419,20 @@ def apply_intake_ops(
 
             manual_fields = patch.get("manual_fields")
             if isinstance(manual_fields, dict):
+                tid0 = safe_str(ref.asset.get("asset_type_id")).strip()
+                td_for_keys = load_asset_type(tid0) if tid0 else None
+                input_keys = _input_keys(td_for_keys) if isinstance(td_for_keys, dict) else []
                 for kk, vv in manual_fields.items():
                     kks = safe_str(kk).strip()
                     if not kks:
                         continue
-                    _ensure_field_manual(ref.asset, key=kks, value=vv)
+                    target = kks
+                    if input_keys and kks not in input_keys:
+                        for ik in input_keys:
+                            if _alias_to_input_key(type_id=tid0, candidate_key=kks, input_key=ik):
+                                target = ik
+                                break
+                    _ensure_field_manual(ref.asset, key=target, value=vv)
 
             # If inputs were provided as attributes, copy them into template manual fields.
             tid = safe_str(ref.asset.get("asset_type_id")).strip()

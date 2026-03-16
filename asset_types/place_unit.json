@@ -1,0 +1,19 @@
+{
+  "id": "place_unit",
+  "label": "Unit (place)",
+  "description": "A subdivision within a building (e.g. flat/suite) that can contain rooms.",
+  "type": "place",
+  "subtype": "unit",
+  "current_role": "passive",
+  "occupied": false,
+  "inputs": [],
+  "outputs": [
+    {
+      "key": "emissions_tco2e_per_year",
+      "label": "Emissions",
+      "kind": "number",
+      "unit": "tCO2e/year",
+      "formula": "0"
+    }
+  ]
+}

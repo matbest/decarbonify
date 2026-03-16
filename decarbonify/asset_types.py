@@ -26,8 +26,19 @@ def asset_type_dir() -> Path:
     return _repo_root() / "asset_types"
 
 
-@lru_cache(maxsize=1)
-def list_asset_type_summaries() -> List[AssetTypeSummary]:
+def _asset_types_dir_mtime_ns() -> int:
+    try:
+        root = asset_type_dir()
+        if not root.exists():
+            return 0
+        # If files change, dir mtime typically updates on Windows.
+        return int(root.stat().st_mtime_ns)
+    except Exception:
+        return 0
+
+
+@lru_cache(maxsize=4)
+def _list_asset_type_summaries_cached(_dir_mtime_ns: int) -> List[AssetTypeSummary]:
     out: List[AssetTypeSummary] = []
     root = asset_type_dir()
     if not root.exists() or not root.is_dir():
@@ -54,8 +65,23 @@ def list_asset_type_summaries() -> List[AssetTypeSummary]:
     return out
 
 
-@lru_cache(maxsize=128)
-def load_asset_type(type_id: str) -> Optional[Dict[str, Any]]:
+def list_asset_type_summaries() -> List[AssetTypeSummary]:
+    return _list_asset_type_summaries_cached(_asset_types_dir_mtime_ns())
+
+
+def _asset_type_file_mtime_ns(type_id: str) -> int:
+    try:
+        root = asset_type_dir()
+        path = root / f"{safe_str(type_id).strip()}.json"
+        if path.exists():
+            return int(path.stat().st_mtime_ns)
+        return 0
+    except Exception:
+        return 0
+
+
+@lru_cache(maxsize=256)
+def _load_asset_type_cached(type_id: str, _mtime_ns: int) -> Optional[Dict[str, Any]]:
     type_id = safe_str(type_id).strip()
     if not type_id:
         return None
@@ -78,6 +104,10 @@ def load_asset_type(type_id: str) -> Optional[Dict[str, Any]]:
         return raw if isinstance(raw, dict) else None
     except Exception:
         return None
+
+
+def load_asset_type(type_id: str) -> Optional[Dict[str, Any]]:
+    return _load_asset_type_cached(safe_str(type_id).strip(), _asset_type_file_mtime_ns(type_id))
 
 
 def _ensure_data_fields(asset: Dict[str, Any]) -> Dict[str, Any]:
@@ -373,13 +403,15 @@ def persist_computed_outputs(
     asset: Dict[str, Any],
     type_def: Dict[str, Any],
     computed: Dict[str, float],
-) -> None:
+) -> bool:
     fields = _ensure_data_fields(asset)
     type_id = safe_str(type_def.get("id"))
 
     outputs = type_def.get("outputs")
     if not isinstance(outputs, list):
-        return
+        return False
+
+    changed = False
 
     for out_item in outputs:
         if not isinstance(out_item, dict):
@@ -398,10 +430,17 @@ def persist_computed_outputs(
             derived = {}
             entry["derived"] = derived
 
-        derived["value"] = float(computed[out_key])
+        new_value = float(computed[out_key])
+        if derived.get("value") != new_value:
+            changed = True
+        derived["value"] = new_value
+
+        # Metadata changes are not treated as a value-change signal.
         derived["source"] = "formula"
         if type_id:
             derived["asset_type"] = type_id
         if expr:
             derived["formula"] = expr
         derived["notes"] = f"Computed from asset type '{type_id}' formula. Manual overrides (if any) still take precedence."
+
+    return bool(changed)
