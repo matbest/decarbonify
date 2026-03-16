@@ -1,0 +1,33 @@
+{
+  "id": "place_lot",
+  "label": "Lot",
+  "description": "A lot/parcel container within an estate listing. No direct emissions; used for hierarchy structure.",
+  "type": "place",
+  "subtype": "site",
+  "current_role": "passive",
+  "inputs": [
+    {
+      "key": "area_acres",
+      "label": "Lot area",
+      "kind": "number",
+      "unit": "acres",
+      "help": "Lot area in acres (optional)."
+    },
+    {
+      "key": "area_ha",
+      "label": "Lot area",
+      "kind": "number",
+      "unit": "ha",
+      "help": "Lot area in hectares (optional)."
+    }
+  ],
+  "outputs": [
+    {
+      "key": "emissions_tco2e_per_year",
+      "label": "Emissions",
+      "kind": "number",
+      "unit": "tCO2e/year",
+      "formula": "0"
+    }
+  ]
+}

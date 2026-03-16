@@ -1,0 +1,18 @@
+{
+  "id": "place_stables",
+  "label": "Stables",
+  "description": "Stables building(s) (place). No direct emissions; add lighting/equipment as child assets.",
+  "type": "place",
+  "subtype": "building",
+  "current_role": "passive",
+  "inputs": [],
+  "outputs": [
+    {
+      "key": "emissions_tco2e_per_year",
+      "label": "Emissions",
+      "kind": "number",
+      "unit": "tCO2e/year",
+      "formula": "0"
+    }
+  ]
+}

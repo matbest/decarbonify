@@ -320,6 +320,43 @@ def _refresh_only() -> None:
     st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
     st.rerun()
 
+
+def _clear_portfolio_hierarchy(*, portfolio: Dict[str, Any]) -> int:
+    """Clear the entire asset hierarchy (tree) from the portfolio.
+
+    This is destructive (removes all assets and their data), but is only local until
+    the user explicitly clicks 'Save to Drive'.
+
+    Returns the number of root assets removed.
+    """
+
+    roots = portfolio.get("assets")
+    removed_roots = len(roots) if isinstance(roots, list) else 0
+    portfolio["assets"] = []
+
+    # Reset selection so the detail panel shows the empty state.
+    st.session_state.selected_node_id = ""
+
+    # Clear sidebar rollup cache + tree widget state.
+    st.session_state.pop("sb_subtree_totals_fp", None)
+    st.session_state.pop("sb_subtree_totals", None)
+    st.session_state.asset_tree_initialized = False
+    st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
+
+    # Clear widget state that is keyed by asset ids.
+    for k in list(st.session_state.keys()):
+        ks = safe_str(k)
+        if (
+            ks.startswith("rec_done_")
+            or ks.startswith("rec_ignore_")
+            or ks.startswith("rec_bin_")
+            or ks.startswith("sb_add_child_")
+            or ks.startswith("sb_delete_confirm::")
+        ):
+            st.session_state.pop(k, None)
+
+    return int(removed_roots)
+
 # Ensure stable ids exist for all assets (idempotent).
 ensure_asset_ids(portfolio, id_key="_id")
 # Ensure data_fields schema exists for all assets (idempotent).
@@ -549,6 +586,17 @@ with st.sidebar:
 
     st.divider()
     # Bottom area: signed-in info + logout
+
+    with st.expander("Clear all", expanded=False):
+        st.caption("Clears the entire hierarchy (all assets) and the data underneath. This cannot be undone.")
+        confirm_key = "sb_clear_all_hierarchy_confirm"
+        confirmed = bool(st.checkbox("Confirm", key=confirm_key))
+        if st.button("Clear all", type="primary", disabled=not confirmed, use_container_width=True):
+            n = _clear_portfolio_hierarchy(portfolio=portfolio)
+            st.session_state.pop(confirm_key, None)
+            st.caption(f"Cleared hierarchy ({n} root asset(s) removed).")
+            _refresh_only()
+
     email = auth.current_user()
     if email:
         profile = auth.current_user_profile() or {}

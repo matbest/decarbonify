@@ -201,6 +201,193 @@ def _mixed_use_space_assets_from_text(text: str) -> List[Dict[str, Any]]:
     return out
 
 
+def _word_number_to_int(s: str) -> int | None:
+    w = _norm_text(s)
+    if not w:
+        return None
+    m = {
+        "one": 1,
+        "two": 2,
+        "three": 3,
+        "four": 4,
+        "five": 5,
+        "six": 6,
+        "seven": 7,
+        "eight": 8,
+        "nine": 9,
+        "ten": 10,
+    }
+    if w in m:
+        return m[w]
+    try:
+        if re.fullmatch(r"[0-9]{1,3}", w):
+            return int(w)
+    except Exception:
+        return None
+    return None
+
+
+def _extract_lot_specs(text: str) -> List[Dict[str, Any]]:
+    """Extract estate listing lots like 'Lot 1 - ...'.
+
+    Returns a list of {"lot_number": int, "desc": str, "area_acres": float|None}.
+    """
+
+    lines = [ln.rstrip() for ln in safe_str(text).splitlines()]
+    out: List[Dict[str, Any]] = []
+    lot_re = re.compile(r"^\s*lot\s*([0-9]{1,2})\s*[-\u2013\u2014]\s*(.+?)\s*$", flags=re.IGNORECASE)
+    area_re = re.compile(r"\babout\s+([0-9]+(?:\.[0-9]+)?)\s*acres?\b", flags=re.IGNORECASE)
+
+    i = 0
+    while i < len(lines):
+        ln = safe_str(lines[i]).strip()
+        m = lot_re.match(ln)
+        if not m:
+            i += 1
+            continue
+
+        try:
+            lot_no = int(m.group(1))
+        except Exception:
+            i += 1
+            continue
+
+        desc = safe_str(m.group(2)).strip()
+        area_acres = None
+        m_area = area_re.search(desc)
+        if m_area:
+            try:
+                area_acres = float(m_area.group(1))
+            except Exception:
+                area_acres = None
+        # Often the area appears on the following line.
+        if area_acres is None and (i + 1) < len(lines):
+            m_area2 = area_re.search(safe_str(lines[i + 1]))
+            if m_area2:
+                try:
+                    area_acres = float(m_area2.group(1))
+                except Exception:
+                    area_acres = None
+
+        out.append({"lot_number": lot_no, "desc": desc, "area_acres": area_acres})
+        i += 1
+
+    return out
+
+
+def _lot_child_specs_from_desc(desc: str) -> List[Dict[str, Any]]:
+    """Parse a lot description blob into child asset specs.
+
+    Each spec is {"apply_template_id": str, "asset": dict}.
+    """
+
+    s0 = safe_str(desc).strip().strip(".")
+    if not s0:
+        return []
+
+    # Split by commas first (common listing style).
+    parts = [p.strip().strip(".") for p in s0.split(",") if safe_str(p).strip()]
+    expanded: List[str] = []
+    for p in parts:
+        # Handle "X with A and B".
+        if re.search(r"\bwith\b", p, flags=re.IGNORECASE):
+            head, tail = re.split(r"\bwith\b", p, maxsplit=1, flags=re.IGNORECASE)
+            if safe_str(head).strip():
+                expanded.append(safe_str(head).strip())
+            if safe_str(tail).strip():
+                expanded.append(safe_str(tail).strip())
+        else:
+            expanded.append(p)
+
+    # Now split by ' and ' where it's enumerating items.
+    items: List[str] = []
+    for p in expanded:
+        pn = _norm_text(p)
+        if "gardens and grounds" in pn:
+            items.append(p)
+            continue
+        if " and " in pn:
+            for sub in re.split(r"\band\b", p, flags=re.IGNORECASE):
+                if safe_str(sub).strip():
+                    items.append(safe_str(sub).strip())
+        else:
+            items.append(p)
+
+    def _add(apply_template_id: str, name: str, *, core_type: str = "place", subtype: str = "", description: str = "Imported from listing text (lot breakdown).") -> Dict[str, Any]:
+        return {
+            "apply_template_id": apply_template_id,
+            "asset": {
+                "name": name,
+                "core_type": core_type,
+                "subtype": subtype,
+                "description": description,
+            },
+        }
+
+    out: List[Dict[str, Any]] = []
+    for raw in items:
+        token = safe_str(raw).strip().strip(".")
+        if not token:
+            continue
+        tn = _norm_text(token)
+
+        # Quantified items: "3 x ..." / "three cottages".
+        q = re.match(r"^(?:([0-9]{1,2})\s*x\s+)?(one|two|three|four|five|six|seven|eight|nine|ten|[0-9]{1,2})\s+(.+)$", tn)
+        n = None
+        rest = tn
+        if q:
+            # Prefer explicit leading "3 x" if present.
+            n1 = _word_number_to_int(safe_str(q.group(1))) if safe_str(q.group(1)).strip() else None
+            n2 = _word_number_to_int(safe_str(q.group(2)))
+            n = n1 if n1 is not None else n2
+            rest = safe_str(q.group(3)).strip()
+
+        def _plural_strip(x: str) -> str:
+            x2 = x.strip()
+            if x2.endswith("s"):
+                return x2[:-1]
+            return x2
+
+        if any(k in tn for k in ["swimming pool", "swimmingpool", "pool"]):
+            out.append(_add("place_swimming_pool", "Swimming pool", subtype="outdoor_area"))
+            continue
+        if "tennis" in tn and "court" in tn:
+            out.append(_add("place_tennis_court", "Tennis court", subtype="outdoor_area"))
+            continue
+        if "garden" in tn or "grounds" in tn:
+            out.append({"apply_template_id": "land_garden_land", "asset": {"name": "Gardens and grounds", "core_type": "place", "subtype": "garden_land", "description": "Imported from listing text (lot breakdown)."}})
+            continue
+        if "paddock" in tn:
+            out.append({"apply_template_id": "land_grassland", "asset": {"name": "Paddocks", "core_type": "place", "subtype": "grassland", "description": "Imported from listing text (lot breakdown)."}})
+            continue
+        if "stable" in tn:
+            out.append(_add("place_stables", "Stables", subtype="building"))
+            continue
+        if "outbuilding" in tn or "outbuildings" in tn:
+            out.append(_add("place_outbuildings", "Outbuildings", subtype="building"))
+            continue
+        if "cottage" in tn:
+            nn = n if n is not None else 1
+            nn = max(1, min(int(nn), 12))
+            for i in range(1, nn + 1):
+                out.append(_add("place_cottage", f"Cottage {i}" if nn > 1 else "Cottage", subtype="building"))
+            continue
+        if tn in {"a flat", "flat"} or tn.endswith(" flat"):
+            out.append({"apply_template_id": "place_unit", "asset": {"name": "Flat", "core_type": "place", "subtype": "unit", "description": "Imported from listing text (lot breakdown)."}})
+            continue
+
+        # Default: treat as a building-ish named place.
+        # Preserve original casing for display.
+        name0 = token
+        # De-quantify if we parsed a quantity.
+        if n is not None:
+            name0 = _plural_strip(token)
+
+        out.append(_add("place_building", name0, subtype="building"))
+
+    return out
+
+
 def _is_room_like_asset(asset: Dict[str, Any]) -> bool:
     return safe_str(asset.get("subtype")).strip().lower() == "room"
 
@@ -1002,6 +1189,64 @@ def heuristic_intake_ops(
             },
         }
     )
+
+    # Lot breakdown: if the listing describes Lot 1/Lot 2 etc, draft those as children of the Site.
+    lot_specs = _extract_lot_specs(t)
+    if lot_specs:
+        assumptions.append("Detected estate lots (e.g. 'Lot 1 - ...') and drafted them under the site.")
+        questions.append("Do you want each lot kept as a separate container in the hierarchy, or merged under the main estate/site?")
+
+        for ls in lot_specs:
+            lot_no = int(ls.get("lot_number") or 0)
+            if lot_no <= 0:
+                continue
+
+            lot_ref = f"tmp_lot_{lot_no}"
+            lot_area_acres = ls.get("area_acres")
+            lot_manual_fields: Dict[str, Any] = {}
+            lot_attrs: Dict[str, Any] = {}
+            if lot_area_acres is not None:
+                try:
+                    a_ac = float(lot_area_acres)
+                    lot_attrs["area_acres"] = a_ac
+                    lot_manual_fields["area_acres"] = a_ac
+                    lot_manual_fields["area_ha"] = a_ac * 0.404685642
+                except Exception:
+                    pass
+
+            ops.append(
+                {
+                    "op": "add_asset",
+                    "ref": lot_ref,
+                    "parent_ref": site_ref,
+                    "apply_template_id": "place_lot",
+                    "asset": {
+                        "name": f"Lot {lot_no}",
+                        "core_type": "place",
+                        "subtype": "site",
+                        "location": loc,
+                        "description": "Imported from listing text (lot container).",
+                        **({"attributes": lot_attrs} if lot_attrs else {}),
+                        **({"manual_fields": lot_manual_fields} if lot_manual_fields else {}),
+                    },
+                }
+            )
+
+            desc = safe_str(ls.get("desc"))
+            children = _lot_child_specs_from_desc(desc)
+            for k, child in enumerate(children, start=1):
+                asset_payload = child.get("asset") if isinstance(child, dict) else None
+                if not isinstance(asset_payload, dict):
+                    continue
+                ops.append(
+                    {
+                        "op": "add_asset",
+                        "ref": f"{lot_ref}_child_{k}",
+                        "parent_ref": lot_ref,
+                        "apply_template_id": safe_str(child.get("apply_template_id") or "").strip(),
+                        "asset": asset_payload,
+                    }
+                )
 
     if buildings_n is None:
         # If the text mentions GIA but not count, still propose a single building.
