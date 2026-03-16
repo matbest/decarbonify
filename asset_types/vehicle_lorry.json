@@ -1,0 +1,18 @@
+{
+  "id": "vehicle_lorry",
+  "label": "Lorry / Truck",
+  "description": "A lorry / truck (heavy vehicle asset).",
+  "type": "asset",
+  "subtype": "lorry",
+  "current_role": "transport",
+  "inputs": [],
+  "outputs": [
+    {
+      "key": "emissions_tco2e_per_year",
+      "label": "Emissions",
+      "kind": "number",
+      "unit": "tCO2e/year",
+      "formula": "0"
+    }
+  ]
+}

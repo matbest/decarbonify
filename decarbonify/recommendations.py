@@ -6,9 +6,53 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping
 
-from .emissions import effective_emissions_tco2e_per_year
+from .emissions import effective_emissions_tco2e_per_year, sum_emissions_produced_tco2e_per_year
 from .ontology import hierarchy_category, normalize_core_type, search_text
 from .portfolio_io import safe_str
+
+
+def _compact_data_fields(asset: Dict[str, Any], *, max_fields: int = 40) -> List[Dict[str, Any]]:
+    fields = asset.get("data_fields")
+    if not isinstance(fields, dict) or not fields:
+        return []
+
+    out: List[Dict[str, Any]] = []
+    for k, entry in fields.items():
+        if not isinstance(entry, dict):
+            continue
+        key = safe_str(k).strip()
+        if not key:
+            continue
+
+        manual_v = None
+        derived_v = None
+        manual = entry.get("manual")
+        if isinstance(manual, dict):
+            manual_v = manual.get("value")
+        derived = entry.get("derived")
+        if isinstance(derived, dict):
+            derived_v = derived.get("value")
+        eff_v = manual_v if manual_v is not None else derived_v
+
+        # Skip empty fields to keep prompt compact.
+        if eff_v is None:
+            continue
+
+        out.append(
+            {
+                "key": key,
+                "label": safe_str(entry.get("label") or key),
+                "kind": safe_str(entry.get("kind") or ""),
+                "unit": safe_str(entry.get("unit") or ""),
+                "effective_value": eff_v,
+                "manual_value": manual_v,
+                "derived_value": derived_v,
+            }
+        )
+        if len(out) >= max_fields:
+            break
+
+    return out
 
 
 def recommendation_id(rec: Mapping[str, Any]) -> str:
@@ -105,7 +149,9 @@ def heuristic_recommendations(asset: Dict[str, Any]) -> List[Dict[str, Any]]:
     cat = hierarchy_category(asset)
     fuel = safe_str(asset.get("fuel", "")).lower()
     name = safe_str(asset.get("name", "asset"))
-    txt = search_text(asset)
+    # Include asset_type_id to improve matching when name/description is sparse.
+    type_id = safe_str(asset.get("asset_type_id") or "").strip().lower()
+    txt = (search_text(asset) + (f" {type_id}" if type_id else "")).strip()
 
     recs: List[Dict[str, Any]] = []
 
@@ -189,20 +235,76 @@ def llm_recommendations(portfolio: Dict[str, Any], asset: Dict[str, Any]) -> Lis
     eff_emissions = effective_emissions_tco2e_per_year(asset)
     eff_text = "null" if eff_emissions is None else f"{float(eff_emissions):.4f}"
 
+    # Provide context for container assets (site/building/room) where eff emissions may be 0/None.
+    subtree_total_tco2e = 0.0
+    subtree_contributing = 0
+    subtree_visited = 0
+    subtree_overrides_used = 0
+    try:
+        subtree_total_tco2e, subtree_contributing, subtree_visited, subtree_overrides_used = sum_emissions_produced_tco2e_per_year(asset)
+    except Exception:
+        pass
+    subtree_text = (
+        "null"
+        if subtree_contributing <= 0
+        else f"{float(subtree_total_tco2e):.4f} (assets_with_values={subtree_contributing}/{subtree_visited}, overrides_used={subtree_overrides_used})"
+    )
+
+    # Compact data_fields summary so the model can reason over numeric inputs/outputs.
+    data_fields = _compact_data_fields(asset)
+
+    # Best-effort template metadata.
+    tmpl = {
+        "asset_type_id": safe_str(asset.get("asset_type_id") or "").strip(),
+        "label": "",
+        "inputs": [],
+        "outputs": [],
+    }
+    try:
+        from .asset_types import load_asset_type
+
+        tid = tmpl["asset_type_id"]
+        if tid:
+            td = load_asset_type(tid)
+            if isinstance(td, dict):
+                tmpl["label"] = safe_str(td.get("label") or "").strip()
+                if isinstance(td.get("inputs"), list):
+                    tmpl["inputs"] = [safe_str(x.get("key")) for x in td.get("inputs") if isinstance(x, dict) and safe_str(x.get("key")).strip()]
+                if isinstance(td.get("outputs"), list):
+                    tmpl["outputs"] = [safe_str(x.get("key")) for x in td.get("outputs") if isinstance(x, dict) and safe_str(x.get("key")).strip()]
+    except Exception:
+        pass
+
+    context_obj = {
+        "portfolio_name": portfolio_name,
+        "asset_effective_emissions_tco2e_per_year": eff_emissions,
+        "subtree_produced_emissions_tco2e_per_year": (None if subtree_contributing <= 0 else float(subtree_total_tco2e)),
+        "subtree_stats": {
+            "visited": subtree_visited,
+            "assets_with_values": subtree_contributing,
+            "overrides_used": subtree_overrides_used,
+        },
+        "asset_template": tmpl,
+        "asset_data_fields": data_fields,
+        "asset_json": asset,
+    }
+
     prompt = (
         "You are a decarbonisation advisor. Given a single asset within a property portfolio, "
         "suggest up to 5 practical emissions-reduction or sequestration improvements. "
         "Return ONLY valid JSON with this schema: {\"recommendations\": [ {\"title\": str, "
         "\"description\": str, \"estimated_saving_tco2_per_year\": number, "
         "\"action\": \"add\"|\"remove\"|\"switch\"|\"other\", \"add_asset\": object|null} ] }. "
-        "If action is 'add' or 'switch', include add_asset as a minimal asset JSON object like {\"name\": str, \"type\": str}. "
+        "If action is 'add' or 'switch', include add_asset as a minimal asset JSON object like {\"name\": str, \"core_type\": str, \"subtype\": str} when possible. "
         "If action is 'remove' it applies to the currently selected asset. "
         "If action is 'switch' it means: add add_asset at the same level as the selected asset, and retire the selected asset. "
-        "Use the asset's effective annual emissions (tCO2e/year) as the baseline for savings when available. "
+        "Use the best available baseline for savings: prefer subtree produced emissions (asset + children) when provided, else asset effective emissions. "
         "Savings must be non-negative and should not exceed the baseline magnitude.\n\n"
-        f"Portfolio name: {portfolio_name}\n"
         f"Asset effective emissions tCO2e/year (positive emits, negative sequesters, null unknown): {eff_text}\n"
-        f"Asset JSON: {asset_json}\n"
+        f"Subtree produced emissions tCO2e/year (asset + descendants, negative treated as 0): {subtree_text}\n\n"
+        "Context JSON (template/data_fields/subtree stats included):\n"
+        + json.dumps(context_obj, ensure_ascii=False)
+        + "\n"
     )
 
     resp = client.chat.completions.create(
@@ -236,11 +338,23 @@ def llm_recommendations(portfolio: Dict[str, Any], asset: Dict[str, Any]) -> Lis
                 if saving < 0:
                     saving = 0.0
                 # Clamp to baseline magnitude when known to keep savings realistic.
-                if eff_emissions is not None:
+                # Prefer subtree baseline (container assets often have 0 direct emissions).
+                baseline_mag = None
+                try:
+                    if subtree_contributing > 0:
+                        baseline_mag = abs(float(subtree_total_tco2e))
+                except Exception:
+                    baseline_mag = None
+                try:
+                    if eff_emissions is not None:
+                        eff_mag = abs(float(eff_emissions))
+                        baseline_mag = eff_mag if baseline_mag is None else max(baseline_mag, eff_mag)
+                except Exception:
+                    pass
+                if baseline_mag is not None:
                     try:
-                        max_saving = abs(float(eff_emissions))
-                        if saving > max_saving:
-                            saving = max_saving
+                        if saving > baseline_mag:
+                            saving = float(baseline_mag)
                     except Exception:
                         pass
 

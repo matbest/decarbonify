@@ -1,0 +1,18 @@
+{
+  "id": "vehicle_tractor",
+  "label": "Tractor",
+  "description": "A tractor or similar farm vehicle (equipment asset).",
+  "type": "asset",
+  "subtype": "tractor",
+  "current_role": "consumer",
+  "inputs": [],
+  "outputs": [
+    {
+      "key": "emissions_tco2e_per_year",
+      "label": "Emissions",
+      "kind": "number",
+      "unit": "tCO2e/year",
+      "formula": "0"
+    }
+  ]
+}

@@ -733,6 +733,105 @@ def heuristic_intake_ops(
     if not t:
         return {"status": "empty", "ops": [], "open_questions": [], "assumptions": [], "notes": ""}
 
+    # Equipment / vehicle extraction for asset-register style text.
+    # Keep conservative: only trigger when an Equipment/Machinery section is present.
+    has_equipment_section = bool(
+        re.search(r"\bequipment\b", t, flags=re.IGNORECASE)
+        and (re.search(r"\bmachinery\b", t, flags=re.IGNORECASE) or re.search(r"\bvehicles?\b", t, flags=re.IGNORECASE))
+    )
+
+    equipment_ops: List[Dict[str, Any]] = []
+    if has_equipment_section:
+        parent_id_for_equipment = safe_str(selected_node.node_id) if selected_node else ""
+
+        def _pick_equipment_template(line_norm: str) -> str:
+            if re.search(r"\btractor\b", line_norm):
+                return "vehicle_tractor"
+            if re.search(r"\b(lorry|truck)\b", line_norm):
+                return "vehicle_lorry"
+            if re.search(r"\bvan\b", line_norm):
+                return "vehicle_van"
+            # Avoid matching "car" inside other words.
+            if re.search(r"\bcar\b", line_norm):
+                return "vehicle_car"
+            if re.search(r"\bmower\b", line_norm) or re.search(r"\bmowers\b", line_norm):
+                return "farm_mower"
+            return ""
+
+        def _extract_year(line: str) -> int | None:
+            m = re.search(r"\b(19[5-9][0-9]|20[0-3][0-9])\b", line)
+            if not m:
+                return None
+            try:
+                return int(m.group(1))
+            except Exception:
+                return None
+
+        def _extract_value_gbp(line: str) -> float | None:
+            # Pick the last plausible money-ish number on the line.
+            nums = re.findall(r"\b([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})\b", line)
+            if not nums:
+                return None
+            raw = nums[-1].replace(",", "")
+            try:
+                v = float(raw)
+            except Exception:
+                return None
+            # Ignore tiny values (often quantities) and very huge values (likely investments totals).
+            if v < 50:
+                return None
+            if v > 5_000_000:
+                return None
+            return float(v)
+
+        lines = [ln.strip() for ln in t.splitlines() if safe_str(ln).strip()]
+        for ln in lines:
+            ln_norm = _norm_text(ln)
+            # Skip obvious section headers.
+            if ln_norm in {"equipment", "equipment and machinery", "machinery", "vehicles"}:
+                continue
+
+            tmpl = _pick_equipment_template(ln_norm)
+            if not tmpl:
+                continue
+
+            attrs: Dict[str, Any] = {}
+            y = _extract_year(ln)
+            if y is not None:
+                attrs["acquired_year"] = int(y)
+
+            if re.search(r"\binsurance\s+value\b", ln, flags=re.IGNORECASE):
+                attrs["value_method"] = "insurance"
+            elif re.search(r"\bpurchase\s+price\b", ln, flags=re.IGNORECASE):
+                attrs["value_method"] = "purchase_price"
+            elif re.search(r"\bre\s*valued\b", ln, flags=re.IGNORECASE) or re.search(r"\brevalued\b", ln, flags=re.IGNORECASE):
+                attrs["value_method"] = "revalued"
+
+            v = _extract_value_gbp(ln)
+            if v is not None:
+                attrs["value_gbp"] = float(v)
+
+            # Use a concise name: trim repeated trailing values.
+            name = ln.strip()
+            if len(name) > 120:
+                name = name[:117].rstrip() + "…"
+
+            equipment_ops.append(
+                {
+                    "op": "add_asset",
+                    "ref": f"tmp_eq_{len(equipment_ops) + 1}",
+                    "parent_id": parent_id_for_equipment,
+                    "apply_template_id": tmpl,
+                    "asset": {
+                        "name": name,
+                        "core_type": "asset",
+                        "subtype": safe_str(load_asset_type(tmpl).get("subtype") if isinstance(load_asset_type(tmpl), dict) else "").strip() or "equipment",
+                        "description": "Imported from asset register text.",
+                        **({"attributes": attrs} if attrs else {}),
+                    },
+                }
+            )
+
     acres = _extract_float(t, r"\b([0-9]+(?:\.[0-9]+)?)\s*acres?\b")
     hectares = (
         _extract_float(t, r"\b([0-9]+(?:\.[0-9]+)?)\s*hectares?\b")
@@ -780,7 +879,7 @@ def heuristic_intake_ops(
             loc = safe_str(m2.group(1)).strip()
 
     # If we don't have any strong signals, don't fabricate ops.
-    if (
+    place_signals = not (
         acres is None
         and buildings_n is None
         and gia_sqft is None
@@ -789,8 +888,24 @@ def heuristic_intake_ops(
         and mva is None
         and hectares is None
         and not _mixed_use_space_assets_from_text(t)
-    ):
+    )
+    if not place_signals and not equipment_ops:
         return {"status": "no_signals", "ops": [], "open_questions": [], "assumptions": [], "notes": ""}
+
+    # Equipment-only path: don't invent site/building structure.
+    if (not place_signals) and equipment_ops:
+        return {
+            "status": "ok",
+            "notes": "Drafted equipment assets from an asset-register style Equipment/Machinery section.",
+            "ops": equipment_ops,
+            "open_questions": [
+                "Do you want vehicles/equipment grouped under a specific Site/Building, or kept at the current level?",
+                "For vehicle/equipment items, do you want to track fuel type and annual usage (miles/hours) to estimate emissions?",
+            ],
+            "assumptions": [
+                "Detected an Equipment/Machinery section and added recognizable vehicle/equipment items.",
+            ],
+        }
 
     parent_id = safe_str(selected_node.node_id) if selected_node else ""
 
@@ -968,7 +1083,7 @@ def heuristic_intake_ops(
     return {
         "status": "ok",
         "notes": "Drafted from obvious structure in the text (heuristic fallback).",
-        "ops": ops,
+        "ops": ops + equipment_ops,
         "open_questions": questions,
         "assumptions": assumptions,
     }

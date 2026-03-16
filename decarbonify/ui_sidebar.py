@@ -134,6 +134,8 @@ def _fallback_core_type_icon(asset: Dict[str, Any]) -> str:
 
     # Special-case place subtypes for clearer hierarchy scanning.
     if ct == "place":
+        if stype in {"land", "grassland", "woodland"} or stype.endswith("_land"):
+            return "🟩"
         if hierarchy_category(asset) == "room":
             return "⬜"
         if stype in {"site", "farm", "campus"}:
@@ -191,6 +193,24 @@ def _node_icon(asset: Dict[str, Any]) -> str:
       - producer of electricity -> lightning bolt
       - producer of heat -> hot springs
     """
+
+    type_id = safe_str(asset.get("asset_type_id")).strip().lower()
+    if type_id:
+        # Template-driven overrides for clearer hierarchy scanning.
+        # Land assets: always render as a green square.
+        if type_id.startswith("land_"):
+            return "🟩"
+
+        # Vehicles: prefer the specific vehicle emoji over the generic energy icons.
+        vehicle_icons = {
+            "vehicle_tractor": "🚜",
+            "vehicle_car": "🚗",
+            "vehicle_van": "🚐",
+            "vehicle_lorry": "🚚",
+        }
+        icon = vehicle_icons.get(type_id)
+        if icon:
+            return icon
 
     role = normalize_energy_role(safe_str(asset.get("current_role")))
     carrier = _infer_energy_carrier(asset)

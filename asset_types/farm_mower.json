@@ -1,0 +1,18 @@
+{
+  "id": "farm_mower",
+  "label": "Mower / Grounds equipment",
+  "description": "Grounds maintenance equipment such as mowers (equipment asset).",
+  "type": "asset",
+  "subtype": "mower",
+  "current_role": "consumer",
+  "inputs": [],
+  "outputs": [
+    {
+      "key": "emissions_tco2e_per_year",
+      "label": "Emissions",
+      "kind": "number",
+      "unit": "tCO2e/year",
+      "formula": "0"
+    }
+  ]
+}
