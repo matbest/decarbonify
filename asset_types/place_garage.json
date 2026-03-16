@@ -1,0 +1,18 @@
+{
+  "id": "place_garage",
+  "label": "Garage (place)",
+  "description": "A garage room/container. No direct emissions; attach equipment templates to child assets.",
+  "core_type": "place",
+  "subtype": "garage",
+  "current_role": "passive",
+  "inputs": [],
+  "outputs": [
+    {
+      "key": "emissions_tco2e_per_year",
+      "label": "Emissions",
+      "kind": "number",
+      "unit": "tCO2e/year",
+      "formula": "0"
+    }
+  ]
+}

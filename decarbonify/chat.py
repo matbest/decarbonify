@@ -168,6 +168,77 @@ def llm_edit_selected_subtree(
     selected_kind = safe_str(selected_node.kind)
     subtree_summary = _subtree_compact_summary(selected_asset)
 
+    selected_asset_name = safe_str(selected_asset.get("name")).strip()
+
+    def _add_under_parent_or_root(*, parent_id: str, asset_obj: Dict[str, Any]) -> bool:
+        """Add an asset under parent_id, or at the portfolio root when parent_id is blank."""
+
+        pid = safe_str(parent_id).strip()
+        if pid:
+            try:
+                return bool(add_child_asset(portfolio, parent_id=pid, child_asset=asset_obj))
+            except Exception:
+                return False
+
+        roots = portfolio.get("assets")
+        if not isinstance(roots, list):
+            roots = []
+            portfolio["assets"] = roots
+        roots.append(asset_obj)
+        return True
+
+    def _pick_best_parent_for_child(
+        *,
+        child_asset: Dict[str, Any],
+        preferred_parent_id: str,
+    ) -> Tuple[str, str]:
+        """Return (parent_id, parent_path) where child_asset should be inserted.
+
+        Strategy:
+          1) Use preferred_parent_id if allowed.
+          2) Walk up ancestors from the selected node and pick the first allowed.
+          3) Fall back to the portfolio root.
+        """
+
+        try:
+            from .portfolio_index import index_portfolio
+
+            _nodes, by_id = index_portfolio(portfolio)
+        except Exception:
+            by_id = {}
+
+        pref_id = safe_str(preferred_parent_id).strip()
+        if pref_id:
+            pref_node = by_id.get(pref_id)
+            if pref_node and isinstance(getattr(pref_node, "data", None), dict):
+                try:
+                    if can_add_child(parent_asset=pref_node.data, child_asset=child_asset):
+                        return pref_id, safe_str(pref_node.path)
+                except Exception:
+                    pass
+            # Back-compat: if the preferred parent is the currently selected node, use it.
+            if pref_id == safe_str(selected_id).strip():
+                try:
+                    if can_add_child(parent_asset=selected_asset, child_asset=child_asset):
+                        return pref_id, selected_path
+                except Exception:
+                    pass
+
+        parent_id = safe_str(selected_node.parent_id).strip()
+        while parent_id:
+            n = by_id.get(parent_id)
+            if not n:
+                break
+            try:
+                if can_add_child(parent_asset=n.data, child_asset=child_asset):
+                    return parent_id, safe_str(n.path)
+            except Exception:
+                pass
+            parent_id = safe_str(n.parent_id).strip()
+
+        portfolio_name = safe_str(portfolio.get("portfolio_name") or "Portfolio")
+        return "", portfolio_name
+
     def _parse_jsonish(text: str) -> Optional[Dict[str, Any]]:
         """Best-effort JSON extraction.
 
@@ -293,6 +364,12 @@ def llm_edit_selected_subtree(
         if "battery" in s:
             return "mains_battery"
 
+        # Place/building templates.
+        if "garage" in s:
+            return "place_garage"
+        if any(x in s for x in ["house", "home", "flat", "apartment", "bungalow", "cottage", "building"]):
+            return "place_building"
+
         # Fallback: keyword match against template ids/labels/descriptions.
         words = [w for w in re.split(r"[^a-z0-9]+", s) if len(w) >= 4]
         if not words:
@@ -326,9 +403,80 @@ def llm_edit_selected_subtree(
         except Exception:
             return
 
+    def _ensure_heat_pump_semantics(asset_obj: Dict[str, Any]) -> None:
+        """Ensure a heat pump behaves as an electricity consumer for UI semantics."""
+
+        atid = safe_str(asset_obj.get("asset_type_id")).strip().lower()
+        subtype = safe_str(asset_obj.get("subtype")).strip().lower()
+
+        is_heat_pump = (subtype == "heat_pump") or ("heat_pump" in atid) or ("heat pump" in safe_str(asset_obj.get("name")).lower())
+        if not is_heat_pump:
+            return
+
+        if not safe_str(asset_obj.get("current_role")).strip():
+            asset_obj["current_role"] = "consumer"
+
+        attrs = asset_obj.get("attributes")
+        if not isinstance(attrs, dict):
+            attrs = {}
+            asset_obj["attributes"] = attrs
+
+        et = safe_str(attrs.get("energy_type")).strip().lower().replace("-", "_")
+        if not et:
+            attrs["energy_type"] = "electricity"
+
+    def _tidy_added_name(*, asset_obj: Dict[str, Any]) -> None:
+        """Avoid names like 'Parent / Air-source heat pump' for child assets."""
+
+        name = safe_str(asset_obj.get("name")).strip()
+        if not name:
+            return
+
+        # If name contains a path separator, keep only the last segment.
+        if " / " in name:
+            parts = [p.strip() for p in name.split("/") if p.strip()]
+            if parts:
+                tail = parts[-1].strip()
+                # Only apply this cleanup if it looks like the parent leaked into the name.
+                if selected_asset_name and selected_asset_name.lower() in name.lower():
+                    asset_obj["name"] = tail
+                    name = tail
+
+        # If still overly verbose, prefer template label for templated assets.
+        atid = safe_str(asset_obj.get("asset_type_id")).strip()
+        if atid:
+            try:
+                from .asset_types import load_asset_type
+
+                td = load_asset_type(atid)
+                if isinstance(td, dict):
+                    label = safe_str(td.get("label")).strip()
+                    if label and (len(name) > 40 or selected_asset_name.lower() in name.lower()):
+                        asset_obj["name"] = label
+            except Exception:
+                pass
+
     def _infer_core_type_and_subtype(*, name: str, user_text: str) -> Tuple[str, str]:
         s = f"{name} {user_text}".lower()
-        if any(x in s for x in ["building", "clubhouse", "club house", "hall", "centre", "warehouse"]):
+        if "garage" in s:
+            return ("place", "garage")
+        if any(
+            x in s
+            for x in [
+                "building",
+                "house",
+                "home",
+                "flat",
+                "apartment",
+                "bungalow",
+                "cottage",
+                "clubhouse",
+                "club house",
+                "hall",
+                "centre",
+                "warehouse",
+            ]
+        ):
             return ("place", "building")
         if "room" in s:
             return ("place", "room")
@@ -348,6 +496,20 @@ def llm_edit_selected_subtree(
         t = (user_text or "").strip()
         if not t:
             return "New asset"
+
+        # Common descriptive add phrasing: "it's got a heat pump"
+        m_has = re.search(
+            r"\b(?:also\s+)?(?:has|have|got|with|includes|including)\b\s+(?:a|an|the)?\s*(.+)$",
+            t,
+            flags=re.IGNORECASE,
+        )
+        if m_has and (m_has.group(1) or "").strip():
+            candidate = (m_has.group(1) or "").strip()
+            candidate = candidate.strip(" .!?:;\"'“”‘’`")
+            if candidate:
+                if candidate == candidate.lower():
+                    candidate = " ".join(w.capitalize() for w in candidate.split())
+                return candidate
 
         # Try to extract what's being added: "add X to/under Y"
         m = re.search(r"\badd\b\s+(?:a|an|the)?\s*(.+?)(?:\s+\b(?:to|under|into|in|within|on)\b\s+.+)?$", t, flags=re.IGNORECASE)
@@ -430,6 +592,11 @@ def llm_edit_selected_subtree(
     applied = False
     added_asset_id: Optional[str] = None
     coercions: List[str] = []
+
+    # If we create a building/land in this request, subsequent equipment/components should
+    # prefer to attach to that new place rather than the original selected component.
+    preferred_container_id = safe_str(selected_id).strip()
+    preferred_container_path = safe_str(selected_path).strip()
     for op in ops:
         if not isinstance(op, dict):
             continue
@@ -458,27 +625,52 @@ def llm_edit_selected_subtree(
         if tid:
             _apply_template_if_any(asset_obj=new_asset, template_id=tid)
 
-        # Enforce parent→child containment rules. If disallowed, coerce to generic.
-        if not can_add_child(parent_asset=selected_asset, child_asset=new_asset):
+        _ensure_heat_pump_semantics(new_asset)
+        _tidy_added_name(asset_obj=new_asset)
+
+        # Pick a valid insertion parent. If the selection is a component (e.g. a heat pump)
+        # and the user is adding a new building/land, we should climb to a valid container
+        # or use the portfolio root rather than coercing types.
+        parent_id, parent_path = _pick_best_parent_for_child(child_asset=new_asset, preferred_parent_id=preferred_container_id)
+        if not parent_id and safe_str(preferred_container_id).strip() and not can_add_child(parent_asset=selected_asset, child_asset=new_asset):
             why = explain_disallowed_child_assets(parent_asset=selected_asset, child_asset=new_asset)
             coercions.append(
-                f"Used core_type='asset' for '{name}' because '{display_kind(new_asset)}' isn't allowed under '{selected_kind}'."
+                f"Added '{name}' at the portfolio root because '{display_kind(new_asset)}' isn't allowed under '{selected_kind}'."
                 + (f" ({why})" if why else "")
             )
-            new_asset["core_type"] = "asset"
-            new_asset["subtype"] = ""
-            new_asset.pop("asset_type_id", None)
+        elif parent_id and parent_id != preferred_container_id and not can_add_child(parent_asset=selected_asset, child_asset=new_asset):
+            why = explain_disallowed_child_assets(parent_asset=selected_asset, child_asset=new_asset)
+            coercions.append(
+                f"Added '{name}' under {parent_path} because '{display_kind(new_asset)}' isn't allowed under '{selected_kind}'."
+                + (f" ({why})" if why else "")
+            )
 
         new_asset.setdefault("_id", uuid.uuid4().hex)
-        ok = add_child_asset(portfolio, parent_id=selected_id, child_asset=new_asset)
+        ok = _add_under_parent_or_root(parent_id=parent_id, asset_obj=new_asset)
         if ok:
             applied = True
             added_asset_id = safe_str(new_asset.get("_id")) or added_asset_id
 
+            # If this new asset is a place container, prefer it for subsequent adds.
+            try:
+                from .ontology import hierarchy_category
+
+                cat = hierarchy_category(new_asset)
+                if cat in {"land", "building", "place"}:
+                    preferred_container_id = safe_str(new_asset.get("_id")).strip() or preferred_container_id
+                    preferred_container_path = safe_str(new_asset.get("name")).strip() or preferred_container_path
+            except Exception:
+                pass
+
     # Fallback: if the model didn't return ops, but the user seems to be asking to add something,
     # add one best-effort child asset anyway.
     if not applied:
-        wants_add = "add" in user_message.lower()
+        lower = user_message.lower()
+        wants_add = (
+            ("add" in lower)
+            or bool(re.search(r"\b(create|make|install|put|place|fit|build)\b", lower))
+            or (bool(re.search(r"\b(also\s+)?(has|have|got|with|includes|including)\b", lower)) and bool(re.search(r"\b(heat pump|boiler|solar|pv|battery|lighting|lights|floodlight|fridge|refrigerator|freezer|oven)\b", lower)))
+        )
         if wants_add:
             guessed_name = _guess_asset_name(user_message)
             inferred_core, inferred_sub = _infer_core_type_and_subtype(name=guessed_name, user_text=user_message)
@@ -495,24 +687,32 @@ def llm_edit_selected_subtree(
                 if tid:
                     _apply_template_if_any(asset_obj=fallback_asset, template_id=tid)
 
-            if not can_add_child(parent_asset=selected_asset, child_asset=fallback_asset):
+            _ensure_heat_pump_semantics(fallback_asset)
+            _tidy_added_name(asset_obj=fallback_asset)
+
+            parent_id, parent_path = _pick_best_parent_for_child(child_asset=fallback_asset, preferred_parent_id=selected_id)
+            if not parent_id and not can_add_child(parent_asset=selected_asset, child_asset=fallback_asset):
                 why = explain_disallowed_child_assets(parent_asset=selected_asset, child_asset=fallback_asset)
                 coercions.append(
-                    f"Used core_type='asset' for '{guessed_name}' because '{display_kind(fallback_asset)}' isn't allowed under '{selected_kind}'."
+                    f"Added '{guessed_name}' at the portfolio root because '{display_kind(fallback_asset)}' isn't allowed under '{selected_kind}'."
                     + (f" ({why})" if why else "")
                 )
-                fallback_asset["core_type"] = "asset"
-                fallback_asset["subtype"] = ""
-                fallback_asset.pop("asset_type_id", None)
+            elif parent_id and parent_id != selected_id and not can_add_child(parent_asset=selected_asset, child_asset=fallback_asset):
+                why = explain_disallowed_child_assets(parent_asset=selected_asset, child_asset=fallback_asset)
+                coercions.append(
+                    f"Added '{guessed_name}' under {parent_path} because '{display_kind(fallback_asset)}' isn't allowed under '{selected_kind}'."
+                    + (f" ({why})" if why else "")
+                )
 
-            ok = add_child_asset(portfolio, parent_id=selected_id, child_asset=fallback_asset)
+            ok = _add_under_parent_or_root(parent_id=parent_id, asset_obj=fallback_asset)
             if ok:
                 applied = True
                 added_asset_id = safe_str(fallback_asset.get("_id")) or added_asset_id
                 if not reply:
-                    reply = f"Added '{guessed_name}' under {selected_path}."
+                    reply = f"Added '{guessed_name}' under {parent_path}." if parent_id else f"Added '{guessed_name}' at the portfolio root."
                 else:
-                    reply = reply.rstrip() + f"\n\nApplied: added '{guessed_name}' under {selected_path}."
+                    where = (f"under {parent_path}" if parent_id else "at the portfolio root")
+                    reply = reply.rstrip() + f"\n\nApplied: added '{guessed_name}' {where}."
 
                 if safe_str(fallback_asset.get("asset_type_id")).strip():
                     reply = reply.rstrip() + f"\nTemplate: {safe_str(fallback_asset.get('asset_type_id')).strip()}"

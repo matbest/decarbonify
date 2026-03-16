@@ -36,7 +36,7 @@ def render_chat(*, portfolio: Dict[str, Any], nodes: List[AssetNode], selected_n
         t = (text or "").lower()
         return bool(
             re.search(
-                r"\b(building|bilding|buidling|buliding|bulding|builidng|buiilding)\b",
+                r"\b(building|bilding|buidling|buliding|bulding|builidng|buiilding|house|home|garage|bungalow|cottage|flat|apartment)\b",
                 t,
             )
         )
@@ -44,6 +44,94 @@ def render_chat(*, portfolio: Dict[str, Any], nodes: List[AssetNode], selected_n
     def _looks_like_add_verb(text: str) -> bool:
         t = (text or "").lower()
         return bool(re.search(r"\b(add|create|make|new|build)\b", t))
+
+    def _extract_building_children(text: str) -> List[str]:
+        """Best-effort extraction of child place subtypes mentioned in the text."""
+
+        t = (text or "").lower()
+        # Focus on the clause likely listing spaces.
+        m = re.search(r"\b(?:it has|with|that has|which has|includes|containing)\b([\s\S]+)$", t)
+        clause = m.group(1) if m else t
+        # Normalize separators.
+        clause = clause.replace("&", " and ")
+        parts = [p.strip() for p in re.split(r"[,;\n]|\band\b", clause) if p.strip()]
+        joined = " ".join(parts)
+
+        found: List[str] = []
+
+        def add_once(x: str) -> None:
+            if x not in found:
+                found.append(x)
+
+        if re.search(r"\bkitchen\b", joined):
+            add_once("kitchen")
+        if re.search(r"\bhall\b", joined):
+            add_once("hall")
+        if re.search(r"\bgarage\b", joined):
+            add_once("garage")
+        if re.search(r"\b(toilet|loo|wc|restroom|bathroom)\b", joined):
+            add_once("toilet")
+        return found
+
+    def _extract_building_name(text: str) -> str:
+        t = (text or "").strip()
+        if not t:
+            return ""
+
+        mq = re.search(r"\"([^\"]+)\"", t)
+        if mq and mq.group(1).strip():
+            return mq.group(1).strip()
+
+        def _clean_name(s: str) -> str:
+            s0 = (s or "").strip().strip(" .!?:;\"'“”‘’`")
+            # Stop at common trailing clauses.
+            s0 = re.split(
+                r"\s*(?:,|;|\bwith\b|\bit has\b|\bthat has\b|\bwhich has\b|\bincludes\b|\bcontaining\b)\b",
+                s0,
+                maxsplit=1,
+                flags=re.IGNORECASE,
+            )[0]
+            s0 = s0.strip().strip(" .!?:;\"'“”‘’`")
+            # Normalize casing only if user used all-lowercase.
+            if s0 and s0 == s0.lower():
+                s0 = " ".join(w.capitalize() for w in s0.split())
+            return s0
+
+        m = re.search(
+            r"\b(?:called|calle|named|name|call)\b\s+(?:it\s+)?(?:the\s+)?(.+?)(?:(?:,|;)|\bwith\b|\bit has\b|\bthat has\b|\bwhich has\b|\bincludes\b|\bcontaining\b|$)",
+            t,
+            flags=re.IGNORECASE,
+        )
+        if m and (m.group(1) or "").strip():
+            return _clean_name(m.group(1) or "")
+
+        m2 = re.search(
+            r"\b(?:add|create|make|build)\b\s+(?:me\s+)?(?:a|an|the)?\s*(?:new\s+)?(?:building|bilding|buidling|buliding|bulding)\s+(.+?)(?:(?:,|;)|\bwith\b|\bit has\b|\bthat has\b|\bwhich has\b|\bincludes\b|\bcontaining\b|$)",
+            t,
+            flags=re.IGNORECASE,
+        )
+        if m2 and (m2.group(1) or "").strip():
+            return _clean_name(m2.group(1) or "")
+
+        # Handle "add a house ..." and similar.
+        m3 = re.search(
+            r"\b(?:add|create|make|build)\b\s+(?:me\s+)?(?:a|an|the)?\s*(?:new\s+)?(?:house|home|garage|bungalow|cottage|flat|apartment)\s+(.+?)(?:(?:,|;)|\bwith\b|\bit has\b|\bthat has\b|\bwhich has\b|\bincludes\b|\bcontaining\b|$)",
+            t,
+            flags=re.IGNORECASE,
+        )
+        if m3 and (m3.group(1) or "").strip():
+            return _clean_name(m3.group(1) or "")
+
+        return ""
+
+    def _extract_equipment_intents(text: str) -> List[str]:
+        """Extract simple equipment add intents to apply after building creation."""
+
+        t = (text or "").lower()
+        intents: List[str] = []
+        if re.search(r"\bheat\s*pump\b", t):
+            intents.append("add a heat pump")
+        return intents
 
     def _create_building_now(
         *,
@@ -77,10 +165,19 @@ def render_chat(*, portfolio: Dict[str, Any], nodes: List[AssetNode], selected_n
             pass
 
         ok = False
-        try:
-            ok = bool(add_child_asset(portfolio, parent_id=parent_id, child_asset=new_asset))
-        except Exception:
-            ok = False
+        pid = safe_str(parent_id).strip()
+        if pid:
+            try:
+                ok = bool(add_child_asset(portfolio, parent_id=pid, child_asset=new_asset))
+            except Exception:
+                ok = False
+        else:
+            roots = portfolio.get("assets")
+            if not isinstance(roots, list):
+                roots = []
+                portfolio["assets"] = roots
+            roots.append(new_asset)
+            ok = True
         if not ok:
             return False, ""
 
@@ -89,10 +186,11 @@ def render_chat(*, portfolio: Dict[str, Any], nodes: List[AssetNode], selected_n
         template_by_subtype = {
             "hall": "place_hall",
             "kitchen": "place_kitchen",
+            "garage": "place_garage",
             "toilet": "place_toilet",
         }
         for subtype in child_subtypes:
-            label = "Main Hall" if subtype == "hall" else subtype.capitalize()
+            label = "Main Hall" if subtype == "hall" else ("Garage" if subtype == "garage" else subtype.capitalize())
             child_asset: Dict[str, Any] = {
                 "_id": uuid.uuid4().hex,
                 "name": label,
@@ -131,68 +229,9 @@ def render_chat(*, portfolio: Dict[str, Any], nodes: List[AssetNode], selected_n
     def _start_building_flow(user_text: str) -> str:
         """Initialize a multi-turn building creation flow and return the assistant prompt."""
 
-        def _extract_children(text: str) -> List[str]:
-            """Best-effort extraction of child place subtypes mentioned in the text."""
-
-            t = (text or "").lower()
-            # Focus on the clause likely listing spaces.
-            m = re.search(r"\b(?:it has|with|that has|which has|includes|containing)\b([\s\S]+)$", t)
-            clause = m.group(1) if m else t
-            # Normalize separators.
-            clause = clause.replace("&", " and ")
-            parts = [p.strip() for p in re.split(r"[,;\n]|\band\b", clause) if p.strip()]
-            joined = " ".join(parts)
-
-            found: List[str] = []
-            def add_once(x: str) -> None:
-                if x not in found:
-                    found.append(x)
-
-            if re.search(r"\bkitchen\b", joined):
-                add_once("kitchen")
-            if re.search(r"\bhall\b", joined):
-                add_once("hall")
-            if re.search(r"\b(toilet|loo|wc|restroom|bathroom)\b", joined):
-                add_once("toilet")
-            return found
-
-        def _extract_name(text: str) -> str:
-            t = (text or "").strip()
-            if not t:
-                return ""
-            mq = re.search(r"\"([^\"]+)\"", t)
-            if mq and mq.group(1).strip():
-                return mq.group(1).strip()
-
-            def _clean_name(s: str) -> str:
-                s0 = (s or "").strip().strip(" .!?:;\"'“”‘’`")
-                # Stop at common trailing clauses.
-                s0 = re.split(r"\s*(?:,|;|\bwith\b|\bit has\b|\bthat has\b|\bwhich has\b|\bincludes\b|\bcontaining\b)\b", s0, maxsplit=1, flags=re.IGNORECASE)[0]
-                s0 = s0.strip().strip(" .!?:;\"'“”‘’`")
-                # Normalize casing only if user used all-lowercase.
-                if s0 and s0 == s0.lower():
-                    s0 = " ".join(w.capitalize() for w in s0.split())
-                return s0
-
-            m = re.search(
-                r"\b(?:called|calle|named|name|call)\b\s+(?:it\s+)?(?:the\s+)?(.+?)(?:(?:,|;)|\bwith\b|\bit has\b|\bthat has\b|\bwhich has\b|\bincludes\b|\bcontaining\b|$)",
-                t,
-                flags=re.IGNORECASE,
-            )
-            if m and (m.group(1) or "").strip():
-                return _clean_name(m.group(1) or "")
-
-            m2 = re.search(
-                r"\b(?:add|create|make|build)\b\s+(?:me\s+)?(?:a|an|the)?\s*(?:new\s+)?(?:building|bilding|buidling|buliding|bulding)\s+(.+?)(?:(?:,|;)|\bwith\b|\bit has\b|\bthat has\b|\bwhich has\b|\bincludes\b|\bcontaining\b|$)",
-                t,
-                flags=re.IGNORECASE,
-            )
-            if m2 and (m2.group(1) or "").strip():
-                return _clean_name(m2.group(1) or "")
-            return ""
-
-        extracted_name = _extract_name(user_text)
-        extracted_children = _extract_children(user_text)
+        extracted_name = _extract_building_name(user_text)
+        extracted_children = _extract_building_children(user_text)
+        pending_add = _extract_equipment_intents(user_text)
 
         # If we have enough information and the current selection can accept a building, create immediately.
         if extracted_name and selected_node is not None:
@@ -225,6 +264,7 @@ def render_chat(*, portfolio: Dict[str, Any], nodes: List[AssetNode], selected_n
             "location": "",
             "description": "",
             "candidates": [],
+            "pending_add": pending_add,
         }
 
         if safe_str(st.session_state.chat_building_flow.get("name")).strip():
@@ -286,16 +326,27 @@ def render_chat(*, portfolio: Dict[str, Any], nodes: List[AssetNode], selected_n
 
         candidates = _eligible_parent_candidates()
         flow["candidates"] = candidates
-        if not candidates:
-            flow["active"] = False
-            return "I couldn't find anywhere valid to add a building under. Select a Site/Land node in the sidebar and try again."
 
-        lines = ["Which site (parent) should it go under? Reply with a number, or type part of the name/path. (Type 'cancel' to stop.)"]
-        for i, (_id, path) in enumerate(candidates[:10], start=1):
-            lines.append(f"{i}) {path}")
-        if len(candidates) > 10:
-            lines.append(f"... ({len(candidates) - 10} more not shown)")
-        return "\n".join(lines)
+        # If we can confidently pick a parent, do it automatically to avoid nesting a new
+        # building under an incompatible selection (e.g. a heat pump).
+        if candidates:
+            node_id, path = candidates[0]
+            flow["parent_id"] = safe_str(node_id)
+            flow["parent_path"] = safe_str(path)
+            flow["step"] = "location"
+            return (
+                f"Adding under: {safe_str(path)}.\n\n"
+                "Where is this building located? (optional — reply with a town/city, or 'skip')"
+            )
+
+        # Fall back to portfolio root.
+        flow["parent_id"] = ""
+        flow["parent_path"] = safe_str(portfolio.get("portfolio_name") or "Portfolio")
+        flow["step"] = "location"
+        return (
+            "Adding at the portfolio root (top level).\n\n"
+            "Where is this building located? (optional — reply with a town/city, or 'skip')"
+        )
 
     def _parse_parent_choice(user_text: str) -> Optional[Tuple[str, str]]:
         flow = st.session_state.get("chat_building_flow")
@@ -338,15 +389,28 @@ def render_chat(*, portfolio: Dict[str, Any], nodes: List[AssetNode], selected_n
 
         step = safe_str(flow.get("step")).strip() or "name"
 
+        # Capture equipment mentions at any step so the user can say
+        # "it has a heat pump" during the building wizard.
+        pending_add = flow.get("pending_add") if isinstance(flow.get("pending_add"), list) else []
+        for intent in _extract_equipment_intents(s):
+            if intent not in pending_add:
+                pending_add.append(intent)
+        flow["pending_add"] = pending_add
+
         if step == "name":
             # Allow the user to paste the whole sentence; extract only the name.
-            name = _extract_name(s) or s.strip(" .!?:;\"'“”‘’`")
+            extracted = _extract_building_name(s)
+            if not extracted:
+                # If the user gave details (e.g. "it has a heat pump"), don't treat that as the name.
+                if re.search(r"\b(has|have|got|with|includes|including)\b", s, flags=re.IGNORECASE):
+                    return "What should the new building be called? (e.g. \"Call it Rawel House\") (Type 'cancel' to stop.)"
+            name = extracted or s.strip(" .!?:;\"'“”‘’`")
             if not name:
                 return "What should the new building be called? (Type 'cancel' to stop.)"
             flow["name"] = name
             # Also pick up any mentioned children in this response.
             existing = flow.get("children") if isinstance(flow.get("children"), list) else []
-            for c in _extract_children(s):
+            for c in _extract_building_children(s):
                 if c not in existing:
                     existing.append(c)
             flow["children"] = existing
@@ -376,9 +440,6 @@ def render_chat(*, portfolio: Dict[str, Any], nodes: List[AssetNode], selected_n
             name = safe_str(flow.get("name")).strip() or "New building"
             parent_id = safe_str(flow.get("parent_id")).strip()
             parent_path = safe_str(flow.get("parent_path")).strip() or parent_id
-            if not parent_id:
-                st.session_state.pop("chat_building_flow", None)
-                return "I lost track of which site to add it under. Please try again."
 
             children = flow.get("children") if isinstance(flow.get("children"), list) else []
             ok, _new_id = _create_building_now(
@@ -390,12 +451,32 @@ def render_chat(*, portfolio: Dict[str, Any], nodes: List[AssetNode], selected_n
                 description=safe_str(flow.get("description")),
             )
 
+            # Apply any captured equipment intents under the new building.
+            if ok and _new_id:
+                try:
+                    from .portfolio_index import index_portfolio
+
+                    _nodes2, by_id2 = index_portfolio(portfolio)
+                    new_node = by_id2.get(_new_id)
+                    if new_node is not None:
+                        for intent in (flow.get("pending_add") if isinstance(flow.get("pending_add"), list) else []):
+                            llm_edit_selected_subtree(
+                                portfolio=portfolio,
+                                selected_node=new_node,
+                                user_message=safe_str(intent) or "",
+                            )
+                except Exception:
+                    pass
+
             st.session_state.pop("chat_building_flow", None)
 
             if not ok:
                 return f"I couldn't add '{name}' under {parent_path}. Try selecting the parent in the sidebar and retry."
 
-            st.rerun()
+            extra = ""
+            if isinstance(flow.get("pending_add"), list) and flow.get("pending_add"):
+                extra = " Added: " + ", ".join([safe_str(x) for x in flow.get("pending_add") if safe_str(x).strip()]) + "."
+            return f"Added building '{name}' under {parent_path}." + extra
 
         return "What's the building name?"
 
@@ -409,8 +490,20 @@ def render_chat(*, portfolio: Dict[str, Any], nodes: List[AssetNode], selected_n
         # Avoid triggering on advisory questions.
         if re.search(r"\bshould i\b", t):
             return False
+
         # Includes common verbs and is intentionally broad; building intent is handled separately first.
-        return bool(re.search(r"\b(add|create|make|install|put|place|fit|build)\b", t))
+        if bool(re.search(r"\b(add|create|make|install|put|place|fit|build)\b", t)):
+            return True
+
+        # Also treat descriptive phrasing as an add intent when it clearly names an addable asset.
+        mentions_addable = bool(
+            re.search(
+                r"\b(heat pump|boiler|solar|pv|photovoltaic|battery|floodlight|floodlights|lighting|lights|fridge|refrigerator|freezer|oven)\b",
+                t,
+            )
+        )
+        has_like = bool(re.search(r"\b(also\s+)?(has|have|got|with|includes|including|contain|containing)\b", t))
+        return bool(mentions_addable and has_like)
 
     # Render messages first so the input stays below.
     messages_box = _scroll_container(height=560)

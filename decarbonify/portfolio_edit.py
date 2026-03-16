@@ -45,6 +45,10 @@ def can_add_child(*, parent_asset: Dict[str, Any], child_asset: Dict[str, Any]) 
 
     if parent_cat == "building" and child_cat == "land":
         return False
+    # Buildings should not contain other buildings; model separate buildings as siblings
+    # under a site/land/root container.
+    if parent_cat == "building" and child_cat == "building":
+        return False
     if parent_cat == "room" and child_cat in {"building", "land"}:
         return False
     if parent_cat == "component" and child_cat in {"room", "building", "land", "place"}:
@@ -60,6 +64,8 @@ def explain_disallowed_child_assets(*, parent_asset: Dict[str, Any], child_asset
     child_cat = hierarchy_category(child_asset)
     if parent_cat == "building" and child_cat == "land":
         return "A building cannot contain land; add that land asset under a land parent instead."
+    if parent_cat == "building" and child_cat == "building":
+        return "A building cannot contain other buildings; add it under a site/land (or at the portfolio root)."
     if parent_cat == "room" and child_cat in {"building", "land"}:
         return "A room cannot contain buildings or land; add it higher in the hierarchy (e.g. under a building or land)."
     if parent_cat == "component" and child_cat in {"room", "building", "land"}:

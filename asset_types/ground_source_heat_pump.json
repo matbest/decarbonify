@@ -2,6 +2,12 @@
   "id": "ground_source_heat_pump",
   "label": "Ground-source heat pump",
   "description": "Ground-source heat pump (GSHP). Computes electricity input and annual tCO2e from delivered heat.",
+  "core_type": "energy_system",
+  "subtype": "heat_pump",
+  "current_role": "consumer",
+  "attributes": {
+    "energy_type": "electricity"
+  },
   "inputs": [
     {
       "key": "annual_heat_delivered_kwh_thermal",
@@ -13,12 +19,6 @@
     {
       "key": "heat_pump_cop",
       "label": "Heat pump COP",
-      "core_type": "energy_system",
-      "subtype": "heat_pump",
-      "current_role": "consumer",
-      "attributes": {
-        "energy_type": "electricity"
-      },
       "kind": "number",
       "unit": "ratio",
       "default": 4.0,
