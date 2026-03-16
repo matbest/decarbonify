@@ -38,6 +38,7 @@ from .recommendations import (
     extract_recommendation_items,
     generate_recommendations_bundle,
     heuristic_recommendations,
+    normalize_recommendations_for_display,
     openai_client_available,
     recommendation_id,
 )
@@ -847,6 +848,9 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
     recs = extract_recommendation_items(asset)
     if not recs:
         recs = heuristic_recommendations(asset)
+    
+    # Ground savings/calculation to current baseline so edits to inputs update the displayed savings.
+    recs = normalize_recommendations_for_display(asset, recs)
 
     st.markdown("**Recommendations**")
 
@@ -908,6 +912,8 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
         action = safe_str(rec.get("action") or "other").lower()
         status["action"] = action
         status["title"] = safe_str(rec.get("title"))
+        status["description"] = safe_str(rec.get("description"))
+        status["calculation"] = safe_str(rec.get("calculation"))
         try:
             status["saving_tco2_per_year"] = float(rec.get("estimated_saving_tco2_per_year", 0) or 0)
         except Exception:
@@ -1070,11 +1076,19 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
                         "__rid": rid0_s,
                         "title": safe_str(st0.get("title")) or "Saved recommendation",
                         "description": safe_str(st0.get("description")),
+                        "calculation": safe_str(st0.get("calculation")),
+                        "assumptions": st0.get("assumptions") if isinstance(st0.get("assumptions"), list) else None,
+                        "assumed_reduction_fraction": st0.get("assumed_reduction_fraction"),
+                        "baseline_source": safe_str(st0.get("baseline_source")),
+                        "baseline_tco2e_per_year": st0.get("baseline_tco2e_per_year"),
                         "estimated_saving_tco2_per_year": float(st0.get("saving_tco2_per_year", 0) or 0),
                         "action": safe_str(st0.get("action")) or "other",
                         "add_asset": st0.get("add_asset") if isinstance(st0.get("add_asset"), dict) else None,
                     }
                 )
+        
+        # Re-normalize after merging in saved items so old 0-savings entries can be grounded too.
+        recs = normalize_recommendations_for_display(asset, recs)
 
         # Table header
         h1, h2, h3, h4, h5 = st.columns([0.56, 0.12, 0.10, 0.11, 0.11], gap="small")
@@ -1095,6 +1109,14 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
 
             title = safe_str(r.get("title"))
             desc = safe_str(r.get("description"))
+            calc = safe_str(r.get("calculation"))
+            assumptions_raw = r.get("assumptions")
+            assumptions: List[str] = []
+            if isinstance(assumptions_raw, list):
+                for a in assumptions_raw[:3]:
+                    s = safe_str(a).strip()
+                    if s:
+                        assumptions.append(s)
             saving = float(r.get("estimated_saving_tco2_per_year", 0) or 0)
             action = safe_str(r.get("action") or "other").lower()
             if action in {"add", "remove", "switch"}:
@@ -1108,6 +1130,10 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
                 st.markdown(f"**{title}**")
                 if desc:
                     st.caption(desc)
+                if calc:
+                    st.caption(f"Calculation: {calc}")
+                if assumptions:
+                    st.caption("Assumptions: " + " ".join([f"• {a}" for a in assumptions]))
             with c2:
                 st.write(action)
             with c3:

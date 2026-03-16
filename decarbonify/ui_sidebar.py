@@ -11,7 +11,12 @@ from .emissions import is_retired
 from .ontology import display_kind, hierarchy_category, normalize_core_type, normalize_energy_role
 from .portfolio_index import AssetNode
 from .portfolio_io import as_list, safe_str
-from .recommendations import extract_recommendation_items, heuristic_recommendations, recommendation_id
+from .recommendations import (
+    extract_recommendation_items,
+    heuristic_recommendations,
+    normalize_recommendations_for_display,
+    recommendation_id,
+)
 
 
 @lru_cache(maxsize=1)
@@ -247,6 +252,9 @@ def _asset_savings_tco2_per_year(asset: Dict[str, Any]) -> Tuple[float, float]:
     recs = extract_recommendation_items(asset)
     if not recs:
         recs = heuristic_recommendations(asset)
+
+    # Ground savings to current baseline so rollups update after input edits.
+    recs = normalize_recommendations_for_display(asset, recs)
     for r in recs:
         rid = recommendation_id(r)
         st0 = status_map.get(rid)
