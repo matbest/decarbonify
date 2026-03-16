@@ -711,6 +711,11 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
                             widget_key = f"type_input_{asset_id}_{k}"
                             if kind == "number":
                                 default = "" if manual_val is None else str(manual_val)
+                                # Streamlit widget state persists across reruns. If an external update (e.g. AI intake)
+                                # sets manual_val but the widget previously existed as an empty string, the empty
+                                # widget state would otherwise overwrite and clear the manual value on render.
+                                if manual_val is not None and st.session_state.get(widget_key) in {"", None}:
+                                    st.session_state[widget_key] = default
                                 raw = st.text_input("", value=default, key=widget_key, label_visibility="collapsed")
                                 s = (raw or "").strip()
                                 if s == "":
@@ -726,6 +731,8 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
                                 )
                             else:
                                 default = "" if manual_val is None else str(manual_val)
+                                if manual_val is not None and st.session_state.get(widget_key) in {"", None}:
+                                    st.session_state[widget_key] = default
                                 manual["value"] = st.text_input("", value=default, key=widget_key, label_visibility="collapsed")
 
                     # AI suggestions

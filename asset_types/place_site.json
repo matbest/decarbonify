@@ -5,7 +5,15 @@
   "type": "place",
   "subtype": "site",
   "current_role": "passive",
-  "inputs": [],
+  "inputs": [
+    {
+      "key": "area_acres",
+      "label": "Site area",
+      "kind": "number",
+      "unit": "acres",
+      "help": "Site area in acres (optional)."
+    }
+  ],
   "outputs": [
     {
       "key": "emissions_tco2e_per_year",
