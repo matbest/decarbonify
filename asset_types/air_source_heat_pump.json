@@ -2,7 +2,7 @@
   "id": "air_source_heat_pump",
   "label": "Air-source heat pump",
   "description": "Air-source heat pump (ASHP). Computes electricity input and annual tCO2e from delivered heat.",
-  "core_type": "energy_system",
+  "type": "energy_system",
   "subtype": "heat_pump",
   "current_role": "consumer",
   "attributes": {

@@ -2,7 +2,7 @@
   "id": "land_grassland",
   "label": "Land (grassland)",
   "description": "Generic grassland sequestration/removals. Provide an area and an annual net removals rate. Produces negative emissions when removals are positive.",
-  "core_type": "place",
+  "type": "place",
   "subtype": "grassland",
   "current_role": "passive",
   "inputs": [

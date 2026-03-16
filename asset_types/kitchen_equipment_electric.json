@@ -2,7 +2,7 @@
   "id": "kitchen_equipment_electric",
   "label": "Kitchen equipment (electric)",
   "description": "Generic electric kitchen equipment. Enter annual electricity use to compute tCO2e/year using the portfolio electricity carbon intensity.",
-  "core_type": "asset",
+  "type": "asset",
   "subtype": "kitchen_equipment",
   "current_role": "consumer",
   "attributes": {

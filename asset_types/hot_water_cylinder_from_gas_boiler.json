@@ -2,6 +2,12 @@
   "id": "hot_water_cylinder_from_gas_boiler",
   "label": "Hot water cylinder (heated by gas boiler)",
   "description": "Hot water cylinder whose heat input is supplied by a gas boiler. Computes gas input and annual tCO2e from delivered hot water heat.",
+  "type": "energy_system",
+  "subtype": "hot_water_cylinder",
+  "current_role": "storage",
+  "attributes": {
+    "energy_type": "heat"
+  },
   "inputs": [
     {
       "key": "annual_hot_water_kwh_thermal",
@@ -13,12 +19,6 @@
     {
       "key": "boiler_efficiency",
       "label": "Boiler efficiency",
-      "core_type": "energy_system",
-      "subtype": "hot_water_cylinder",
-      "current_role": "storage",
-      "attributes": {
-        "energy_type": "heat"
-      },
       "kind": "number",
       "unit": "fraction",
       "default": 0.85,

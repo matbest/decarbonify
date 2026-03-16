@@ -2,9 +2,10 @@
   "id": "place_building",
   "label": "Building (place)",
   "description": "A building container. No direct emissions; attach equipment templates to child assets.",
-  "core_type": "place",
+  "type": "place",
   "subtype": "building",
   "current_role": "passive",
+  "occupied": false,
   "inputs": [],
   "outputs": [
     {

@@ -2,6 +2,12 @@
   "id": "electric_oven",
   "label": "Electric oven",
   "description": "Electric oven/cooker. Computes annual tCO2e from electricity use.",
+  "type": "asset",
+  "subtype": "oven",
+  "current_role": "consumer",
+  "attributes": {
+    "energy_type": "electricity"
+  },
   "inputs": [
     {
       "key": "annual_electricity_kwh",
@@ -13,12 +19,6 @@
     {
       "key": "carbon_intensity_of_electricity",
       "label": "Electricity carbon intensity",
-      "core_type": "asset",
-      "subtype": "oven",
-      "current_role": "consumer",
-      "attributes": {
-        "energy_type": "electricity"
-      },
       "kind": "number",
       "unit": "kgCO2e/kWh",
       "default": 0.20,

@@ -2,6 +2,12 @@
   "id": "hot_water_cylinder_from_heat_pump",
   "label": "Hot water cylinder (heated by heat pump)",
   "description": "Hot water cylinder whose heat input is supplied by a heat pump. Computes electricity input and annual tCO2e from delivered hot water heat.",
+  "type": "energy_system",
+  "subtype": "hot_water_cylinder",
+  "current_role": "storage",
+  "attributes": {
+    "energy_type": "heat"
+  },
   "inputs": [
     {
       "key": "annual_hot_water_kwh_thermal",
@@ -13,12 +19,6 @@
     {
       "key": "heat_pump_cop",
       "label": "Heat pump COP",
-      "core_type": "energy_system",
-      "subtype": "hot_water_cylinder",
-      "current_role": "storage",
-      "attributes": {
-        "energy_type": "heat"
-      },
       "kind": "number",
       "unit": "ratio",
       "default": 3.0,

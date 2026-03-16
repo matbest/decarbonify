@@ -554,6 +554,40 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
                             templ = [{"id": s.id, "label": s.label, "description": s.description} for s in summaries]
                             suggested_id, reply = suggest_asset_type_id(portfolio=portfolio, asset=asset, templates=templ)
 
+                        # Heuristic fallback for common place/room naming.
+                        # This keeps the UX smooth for assets like "Main Hall" when templates were consolidated.
+                        if not suggested_id:
+                            allowed_ids = {s.id for s in summaries}
+                            name_l = safe_str(asset.get("name")).strip().lower()
+                            core_type_l = safe_str(asset.get("core_type")).strip().lower()
+                            subtype_l = safe_str(asset.get("subtype")).strip().lower()
+
+                            is_placeish = (core_type_l == "place") or (subtype_l in {"room", "building", "site"})
+                            room_words = {
+                                "hall",
+                                "hallway",
+                                "corridor",
+                                "lobby",
+                                "kitchen",
+                                "toilet",
+                                "wc",
+                                "bath",
+                                "bathroom",
+                                "garage",
+                                "office",
+                                "bedroom",
+                                "living",
+                                "lounge",
+                                "meeting",
+                            }
+                            if is_placeish and "place_room" in allowed_ids:
+                                if subtype_l == "room":
+                                    suggested_id = "place_room"
+                                    reply = safe_str(reply).rstrip() + "\n\nFallback: mapped place subtype 'room' to template 'place_room'."
+                                elif any(w in name_l for w in room_words):
+                                    suggested_id = "place_room"
+                                    reply = safe_str(reply).rstrip() + "\n\nFallback: mapped room-like place name to template 'place_room'."
+
                         asset["llm_asset_type_pick_reply"] = reply
                         asset["llm_asset_type_pick_suggested"] = suggested_id
 
@@ -572,7 +606,7 @@ def render_asset_detail_and_recommendations(*, portfolio: Dict[str, Any], select
                                 st.session_state[f"asset_type_select_pending::{asset_id}"] = suggested_id
                                 st.rerun()
                         else:
-                            st.warning("AI could not find a suitable template. Add one to asset_types/ and try again.")
+                            st.warning("AI could not find a suitable template.")
 
                 with pick_cols[1]:
                     pick_reply = safe_str(asset.get("llm_asset_type_pick_reply"))

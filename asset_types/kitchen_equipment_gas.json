@@ -2,7 +2,7 @@
   "id": "kitchen_equipment_gas",
   "label": "Kitchen equipment (gas)",
   "description": "Generic gas kitchen equipment. Enter annual gas energy use to compute tCO2e/year using the portfolio gas emissions factor.",
-  "core_type": "asset",
+  "type": "asset",
   "subtype": "kitchen_equipment",
   "current_role": "consumer",
   "attributes": {

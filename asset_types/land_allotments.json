@@ -2,7 +2,7 @@
   "id": "land_allotments",
   "label": "Land (allotments)",
   "description": "Generic allotments land. Provide an area and an annual net removals rate. Produces negative emissions when removals are positive.",
-  "core_type": "place",
+  "type": "place",
   "subtype": "allotments",
   "current_role": "passive",
   "inputs": [

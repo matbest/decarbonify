@@ -2,6 +2,12 @@
   "id": "gas_oven",
   "label": "Gas oven",
   "description": "Gas oven/cooker. Computes annual tCO2e from gas energy use.",
+  "type": "asset",
+  "subtype": "oven",
+  "current_role": "consumer",
+  "attributes": {
+    "energy_type": "gas"
+  },
   "inputs": [
     {
       "key": "annual_gas_kwh",
@@ -13,12 +19,6 @@
     {
       "key": "gas_kgco2e_per_kwh",
       "label": "Gas carbon intensity",
-      "core_type": "asset",
-      "subtype": "oven",
-      "current_role": "consumer",
-      "attributes": {
-        "energy_type": "gas"
-      },
       "kind": "number",
       "unit": "kgCO2e/kWh",
       "default": 0.184,

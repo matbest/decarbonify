@@ -2,7 +2,7 @@
   "id": "land_trees",
   "label": "Land (trees)",
   "description": "Generic trees/treeline land. Provide an area and an annual net removals rate. Produces negative emissions when removals are positive.",
-  "core_type": "place",
+  "type": "place",
   "subtype": "trees",
   "current_role": "passive",
   "inputs": [

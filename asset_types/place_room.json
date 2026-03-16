@@ -2,9 +2,10 @@
   "id": "place_room",
   "label": "Room (place)",
   "description": "A room/container within a building. No direct emissions; attach equipment templates to child assets.",
-  "core_type": "place",
+  "type": "place",
   "subtype": "room",
   "current_role": "passive",
+  "occupied": false,
   "inputs": [],
   "outputs": [
     {

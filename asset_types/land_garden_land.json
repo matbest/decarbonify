@@ -2,7 +2,7 @@
   "id": "land_garden_land",
   "label": "Land (garden land)",
   "description": "Generic garden land sequestration/removals. Use if you want to treat gardens differently from grassland/woodland (e.g. managed land). Provide your own rate.",
-  "core_type": "place",
+  "type": "place",
   "subtype": "garden_land",
   "current_role": "passive",
   "inputs": [

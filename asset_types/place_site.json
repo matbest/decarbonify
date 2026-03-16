@@ -2,7 +2,7 @@
   "id": "place_site",
   "label": "Site (place)",
   "description": "A site/place container. No direct emissions; used for hierarchy structure.",
-  "core_type": "place",
+  "type": "place",
   "subtype": "site",
   "current_role": "passive",
   "inputs": [],

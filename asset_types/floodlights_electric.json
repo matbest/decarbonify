@@ -2,6 +2,12 @@
   "id": "floodlights_electric",
   "label": "Floodlights (electric)",
   "description": "Electric floodlights. Computes annual tCO2e from installed power and average daily usage.",
+  "type": "asset",
+  "subtype": "floodlights",
+  "current_role": "consumer",
+  "attributes": {
+    "energy_type": "electricity"
+  },
   "inputs": [
     {
       "key": "total_power_watts",
@@ -13,12 +19,6 @@
     {
       "key": "average_daily_usage_hours",
       "label": "Average daily usage",
-      "core_type": "asset",
-      "subtype": "floodlights",
-      "current_role": "consumer",
-      "attributes": {
-        "energy_type": "electricity"
-      },
       "kind": "number",
       "unit": "hours/day",
       "help": "Average hours of use per day (use seasonal average if applicable)."

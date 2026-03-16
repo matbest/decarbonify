@@ -2,7 +2,7 @@
   "id": "land_soil",
   "label": "Land (soil)",
   "description": "Generic soil land. Provide an area and an annual net removals rate. Produces negative emissions when removals are positive.",
-  "core_type": "place",
+  "type": "place",
   "subtype": "soil",
   "current_role": "passive",
   "inputs": [

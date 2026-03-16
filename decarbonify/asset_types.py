@@ -159,7 +159,8 @@ def apply_asset_type_template(*, asset: Dict[str, Any], type_def: Dict[str, Any]
     # Local import to avoid circular deps.
     from .ontology import normalize_core_type, normalize_energy_role
 
-    tmpl_core_type = safe_str(type_def.get("core_type")).strip()
+    # Template schema: prefer `type` (new) but support legacy `core_type`.
+    tmpl_core_type = safe_str(type_def.get("type") or type_def.get("core_type")).strip()
     if tmpl_core_type:
         asset["core_type"] = normalize_core_type(tmpl_core_type)
 
@@ -170,6 +171,21 @@ def apply_asset_type_template(*, asset: Dict[str, Any], type_def: Dict[str, Any]
     tmpl_role = normalize_energy_role(safe_str(type_def.get("current_role")))
     if tmpl_role:
         asset["current_role"] = tmpl_role
+
+    # Optional: mark whether humans live/occupy this place (and therefore it likely needs heating).
+    # Stored on the asset as a simple top-level boolean.
+    occ = type_def.get("occupied")
+    if occ is not None and "occupied" not in asset:
+        if isinstance(occ, bool):
+            asset["occupied"] = occ
+        elif isinstance(occ, (int, float)):
+            asset["occupied"] = bool(occ)
+        elif isinstance(occ, str):
+            s = occ.strip().lower()
+            if s in {"true", "yes", "y", "1"}:
+                asset["occupied"] = True
+            elif s in {"false", "no", "n", "0"}:
+                asset["occupied"] = False
 
     tmpl_attrs = type_def.get("attributes")
     if isinstance(tmpl_attrs, dict) and tmpl_attrs:

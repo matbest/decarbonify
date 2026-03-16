@@ -2,7 +2,7 @@
   "id": "land_field",
   "label": "Land (field)",
   "description": "Generic field land. Provide an area and an annual net removals rate. Produces negative emissions when removals are positive.",
-  "core_type": "place",
+  "type": "place",
   "subtype": "field",
   "current_role": "passive",
   "inputs": [

@@ -168,6 +168,15 @@ def suggest_asset_type_id(
     asset_kind = display_kind(asset)
     asset_text = search_text(asset)
 
+    # Deprecated / alias template ids that may still be suggested by older prompts or user wording.
+    # We normalize these to the canonical templates (which are expected to be present in `templates`).
+    alias_to_canonical: Dict[str, str] = {
+        "place_hall": "place_room",
+        "place_kitchen": "place_room",
+        "place_toilet": "place_room",
+        "place_garage": "place_room",
+    }
+
     # Keep the options compact; we generally have a small in-repo library.
     options: List[Dict[str, Any]] = []
     for t in templates:
@@ -187,6 +196,7 @@ def suggest_asset_type_id(
     prompt = (
         "You are helping classify an asset into one of a small set of carbon-accounting templates.\n"
         "Choose the single best template id from the provided list.\n"
+        "Important: hall/kitchen/toilet/garage/corridor/lobby/office/bedroom/bathroom etc are all modeled as generic rooms; choose template id 'place_room' if it exists.\n"
         "If none match, return status=\"not_found\" and asset_type_id=null, and say what template should be added.\n\n"
         f"Asset: {asset_name} ({asset_kind})\n"
         f"Asset text: {asset_text[:1400]}\n\n"
@@ -225,6 +235,13 @@ def suggest_asset_type_id(
         return None, text
 
     allowed = {safe_str(x.get("id")).strip() for x in options if safe_str(x.get("id")).strip()}
+
+    # Normalize known aliases to their canonical template ids.
+    if suggested not in allowed and suggested in alias_to_canonical:
+        canonical = alias_to_canonical.get(suggested)
+        if canonical and canonical in allowed:
+            suggested = canonical
+
     if suggested not in allowed:
         return None, text
 
