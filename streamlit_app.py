@@ -257,21 +257,15 @@ st.session_state.auth_user_email = user_email
 google_cfg = auth.google_config()
 refresh_token = auth.current_refresh_token()
 
-# Load controls live in the sidebar to reduce top-of-page whitespace.
-with st.sidebar:
-    with st.expander("Load portfolio", expanded=False):
-        source = st.radio(
-            "Source",
-            ["Use default portfolio.json", "Upload JSON"],
-            horizontal=False,
-            label_visibility="collapsed",
-        )
+# Read load controls from session state (widgets are rendered at the bottom of the sidebar).
+if "sb_portfolio_source" not in st.session_state:
+    st.session_state.sb_portfolio_source = "Use default portfolio.json"
 
-        uploaded = None
-        if source == "Upload JSON":
-            uploaded = st.file_uploader("Portfolio JSON", type=["json"], accept_multiple_files=False)
+source = safe_str(st.session_state.get("sb_portfolio_source")) or "Use default portfolio.json"
+if source not in ("Use default portfolio.json", "Upload JSON"):
+    source = "Use default portfolio.json"
 
-        st.caption("Optional: set OPENAI_API_KEY for AI recommendations.")
+uploaded = st.session_state.get("sb_portfolio_upload")
 
 
 try:
@@ -348,11 +342,6 @@ elif st.session_state.selected_node_id and st.session_state.selected_node_id not
 
 
 with st.sidebar:
-    st.markdown("## Portfolio Carbon Insight Tool")
-
-    portfolio_name = safe_str(portfolio.get("portfolio_name"))
-    if portfolio_name:
-        st.markdown(f"### {portfolio_name}")
     if openai_client_available():
         st.caption("AI: enabled")
     else:
@@ -365,6 +354,7 @@ with st.sidebar:
         nodes=nodes,
         node_by_id=node_by_id,
         selected_node_id=str(st.session_state.selected_node_id),
+        portfolio_fp=current_fp,
         tree_key=tree_key,
     )
     st.session_state.selected_node_id = selected_node_id
@@ -567,6 +557,25 @@ with st.sidebar:
         if st.button("Logout"):
             auth.logout()
             st.rerun()
+
+    with st.expander("Load portfolio", expanded=False):
+        st.radio(
+            "Source",
+            ["Use default portfolio.json", "Upload JSON"],
+            horizontal=False,
+            key="sb_portfolio_source",
+            label_visibility="collapsed",
+        )
+
+        if safe_str(st.session_state.get("sb_portfolio_source")) == "Upload JSON":
+            st.file_uploader(
+                "Portfolio JSON",
+                type=["json"],
+                accept_multiple_files=False,
+                key="sb_portfolio_upload",
+            )
+
+        st.caption("Optional: set OPENAI_API_KEY for AI recommendations.")
 
 if not selected_node:
     st.subheader("Asset Detail")

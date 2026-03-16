@@ -365,8 +365,8 @@ def llm_edit_selected_subtree(
             return "mains_battery"
 
         # Place/building templates.
-        if "garage" in s:
-            return "place_garage"
+        if any(x in s for x in ["room", "kitchen", "hall", "toilet", "loo", "wc", "bathroom", "garage"]):
+            return "place_room"
         if any(x in s for x in ["house", "home", "flat", "apartment", "bungalow", "cottage", "building"]):
             return "place_building"
 

@@ -227,7 +227,7 @@ def hierarchy_category(asset: Dict[str, Any]) -> str:
             return "land"
         if st in {"building", "warehouse"}:
             return "building"
-        if st in {"room", "kitchen", "dining_area", "hall", "office", "floor", "garage"}:
+        if st in {"room", "kitchen", "dining_area", "hall", "office", "floor", "garage", "toilet", "wc", "bathroom"}:
             return "room"
         return "place"
 

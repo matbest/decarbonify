@@ -36,7 +36,7 @@ def render_chat(*, portfolio: Dict[str, Any], nodes: List[AssetNode], selected_n
         t = (text or "").lower()
         return bool(
             re.search(
-                r"\b(building|bilding|buidling|buliding|bulding|builidng|buiilding|house|home|garage|bungalow|cottage|flat|apartment)\b",
+                r"\b(building|bilding|buidling|buliding|bulding|builidng|buiilding|house|home|bungalow|cottage|flat|apartment)\b",
                 t,
             )
         )
@@ -115,7 +115,7 @@ def render_chat(*, portfolio: Dict[str, Any], nodes: List[AssetNode], selected_n
 
         # Handle "add a house ..." and similar.
         m3 = re.search(
-            r"\b(?:add|create|make|build)\b\s+(?:me\s+)?(?:a|an|the)?\s*(?:new\s+)?(?:house|home|garage|bungalow|cottage|flat|apartment)\s+(.+?)(?:(?:,|;)|\bwith\b|\bit has\b|\bthat has\b|\bwhich has\b|\bincludes\b|\bcontaining\b|$)",
+            r"\b(?:add|create|make|build)\b\s+(?:me\s+)?(?:a|an|the)?\s*(?:new\s+)?(?:house|home|bungalow|cottage|flat|apartment)\s+(.+?)(?:(?:,|;)|\bwith\b|\bit has\b|\bthat has\b|\bwhich has\b|\bincludes\b|\bcontaining\b|$)",
             t,
             flags=re.IGNORECASE,
         )
@@ -184,10 +184,10 @@ def render_chat(*, portfolio: Dict[str, Any], nodes: List[AssetNode], selected_n
         # Add mentioned spaces as children under the new building.
         child_subtypes = [safe_str(x).strip().lower() for x in (children or []) if safe_str(x).strip()]
         template_by_subtype = {
-            "hall": "place_hall",
-            "kitchen": "place_kitchen",
-            "garage": "place_garage",
-            "toilet": "place_toilet",
+            "hall": "place_room",
+            "kitchen": "place_room",
+            "garage": "place_room",
+            "toilet": "place_room",
         }
         for subtype in child_subtypes:
             label = "Main Hall" if subtype == "hall" else ("Garage" if subtype == "garage" else subtype.capitalize())
@@ -195,7 +195,7 @@ def render_chat(*, portfolio: Dict[str, Any], nodes: List[AssetNode], selected_n
                 "_id": uuid.uuid4().hex,
                 "name": label,
                 "core_type": "place",
-                "subtype": subtype,
+                "subtype": "room",
             }
             try:
                 from .asset_types import apply_asset_type_template, load_asset_type

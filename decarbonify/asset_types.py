@@ -40,6 +40,8 @@ def list_asset_type_summaries() -> List[AssetTypeSummary]:
             continue
         if not isinstance(raw, dict):
             continue
+        if bool(raw.get("hidden")):
+            continue
         type_id = safe_str(raw.get("id"))
         label = safe_str(raw.get("label")) or type_id
         desc = safe_str(raw.get("description"))

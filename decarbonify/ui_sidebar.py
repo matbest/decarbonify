@@ -2,13 +2,54 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
+from functools import lru_cache
+
 import streamlit as st
 
+from .asset_types import list_asset_type_summaries, load_asset_type
 from .emissions import is_retired
-from .ontology import display_kind, normalize_core_type, normalize_energy_role
+from .ontology import display_kind, hierarchy_category, normalize_core_type, normalize_energy_role
 from .portfolio_index import AssetNode
 from .portfolio_io import as_list, safe_str
 from .recommendations import heuristic_recommendations, recommendation_id
+
+
+@lru_cache(maxsize=1)
+def _asset_type_label_by_id() -> Dict[str, str]:
+    try:
+        return {s.id: safe_str(s.label) for s in list_asset_type_summaries()}
+    except Exception:
+        return {}
+
+
+def _kind_label(asset: Dict[str, Any]) -> str:
+    """Human-friendly kind label for display in the tree.
+
+    Prefer the template label (via asset_type_id) so specialized room templates
+    like Kitchen/Hall don't collapse into the generic subtype 'room'.
+    """
+
+    subtype = safe_str(asset.get("subtype")).strip()
+    type_id = safe_str(asset.get("asset_type_id")).strip()
+    if not type_id:
+        return subtype
+
+    label = safe_str(_asset_type_label_by_id().get(type_id)).strip()
+    if not label:
+        try:
+            td = load_asset_type(type_id)
+            if isinstance(td, dict):
+                label = safe_str(td.get("label")).strip()
+        except Exception:
+            label = ""
+
+    # Shorten "Kitchen (room)" -> "Kitchen" for the suffix.
+    if "(" in label:
+        head = label.split("(", 1)[0].strip()
+        if head:
+            return head
+
+    return label or subtype
 
 
 def _truncate_one_line(text: str, *, max_chars: int = 60) -> str:
@@ -93,6 +134,8 @@ def _fallback_core_type_icon(asset: Dict[str, Any]) -> str:
 
     # Special-case place subtypes for clearer hierarchy scanning.
     if ct == "place":
+        if hierarchy_category(asset) == "room":
+            return "⬜"
         if stype in {"site", "farm", "campus"}:
             return "🗺️"
         if stype in {"building", "warehouse"}:
@@ -248,8 +291,7 @@ def _build_arborist_tree_data(
             continue
         name = safe_str(asset.get("name", f"Unnamed {idx}"))
         icon = _node_icon(asset)
-        subtype = safe_str(asset.get("subtype")).strip()
-        kind = subtype
+        kind = _kind_label(asset)
         node_id = safe_str(asset.get(id_key))
 
         base_label = f"{icon} {name}" + (f" ({kind})" if kind else "")
@@ -301,6 +343,7 @@ def render_asset_hierarchy_sidebar(
     nodes: List[AssetNode],
     node_by_id: Dict[str, AssetNode],
     selected_node_id: str,
+    portfolio_fp: str = "",
     tree_key: str = "asset_tree",
 ) -> Tuple[str, bool]:
     """Render the hierarchy selector.
@@ -308,44 +351,67 @@ def render_asset_hierarchy_sidebar(
     Returns: (selected_node_id, selection_changed)
     """
 
-    st.subheader("Asset Hierarchy")
     if not nodes:
         st.info("No assets found in this portfolio.")
         return "", selected_node_id != ""
 
     roots = as_list(portfolio.get("assets"))
-    subtree_totals = _compute_subtree_savings(roots, id_key="_id")
+
+    # Computing subtree totals can be expensive on large portfolios (walks all nodes and
+    # evaluates heuristic recommendations). Cache it across reruns unless the portfolio changed.
+    cache_fp_key = "sb_subtree_totals_fp"
+    cache_val_key = "sb_subtree_totals"
+    cached_fp = safe_str(st.session_state.get(cache_fp_key))
+    cached_totals = st.session_state.get(cache_val_key)
+    if portfolio_fp and cached_fp == portfolio_fp and isinstance(cached_totals, dict):
+        subtree_totals = cached_totals
+    else:
+        subtree_totals = _compute_subtree_savings(roots, id_key="_id")
+        if portfolio_fp:
+            st.session_state[cache_fp_key] = portfolio_fp
+            st.session_state[cache_val_key] = subtree_totals
 
     tree_data = _build_arborist_tree_data(roots, id_key="_id", subtree_totals=subtree_totals)
     selected_id: Optional[str] = selected_node_id or None
     selection_changed = False
 
+    def _sync_arborist_selection() -> None:
+        candidate = st.session_state.get(tree_key)
+        if isinstance(candidate, dict):
+            cid = safe_str(candidate.get("id"))
+            if cid and cid in node_by_id:
+                st.session_state.selected_node_id = cid
+        elif isinstance(candidate, str):
+            cid = safe_str(candidate)
+            if cid and cid in node_by_id:
+                st.session_state.selected_node_id = cid
+
     try:
         from streamlit_arborist import tree_view  # type: ignore
 
-        if "asset_tree_initialized" not in st.session_state:
-            st.session_state.asset_tree_initialized = False
-        if st.session_state.get("asset_tree_last_key") != tree_key:
-            st.session_state.asset_tree_initialized = False
-            st.session_state.asset_tree_last_key = tree_key
-
-        selection_arg = selected_id if not st.session_state.asset_tree_initialized else None
-
         selected_node_data = tree_view(
             tree_data,
-            selection=selection_arg,
+            selection=selected_id,
             select_internal_nodes=True,
             open_by_default=True,
             height=600,
             key=tree_key,
+            on_change=_sync_arborist_selection,
         )
-        st.session_state.asset_tree_initialized = True
 
-        candidate = selected_node_data
-        if candidate is None:
-            candidate = st.session_state.get(tree_key)
-        if isinstance(candidate, dict) and candidate.get("id") in node_by_id:
-            new_id = str(candidate["id"])
+        if isinstance(selected_node_data, dict):
+            cid = safe_str(selected_node_data.get("id"))
+            if cid and cid in node_by_id:
+                st.session_state.selected_node_id = cid
+        elif isinstance(selected_node_data, str):
+            cid = safe_str(selected_node_data)
+            if cid and cid in node_by_id:
+                st.session_state.selected_node_id = cid
+
+        _sync_arborist_selection()
+
+        new_id = safe_str(st.session_state.get("selected_node_id"))
+        if new_id and new_id in node_by_id:
             if new_id != selected_node_id:
                 selection_changed = True
             selected_node_id = new_id
@@ -362,24 +428,24 @@ def render_asset_hierarchy_sidebar(
                         _strike(
                             _italic(
                                 f"{_node_icon(n.data)} {n.name}"
-                                + (f" ({safe_str(n.data.get('subtype')).strip()})" if safe_str(n.data.get("subtype")).strip() else "")
+                                + (f" ({_kind_label(n.data)})" if _kind_label(n.data) else "")
                             )
                             if not safe_str(n.data.get("asset_type_id")).strip()
                             else (
                                 f"{_node_icon(n.data)} {n.name}"
-                                + (f" ({safe_str(n.data.get('subtype')).strip()})" if safe_str(n.data.get("subtype")).strip() else "")
+                                + (f" ({_kind_label(n.data)})" if _kind_label(n.data) else "")
                             )
                         )
                         if is_retired(n.data)
                         else (
                             _italic(
                                 f"{_node_icon(n.data)} {n.name}"
-                                + (f" ({safe_str(n.data.get('subtype')).strip()})" if safe_str(n.data.get("subtype")).strip() else "")
+                                + (f" ({_kind_label(n.data)})" if _kind_label(n.data) else "")
                             )
                             if not safe_str(n.data.get("asset_type_id")).strip()
                             else (
                                 f"{_node_icon(n.data)} {n.name}"
-                                + (f" ({safe_str(n.data.get('subtype')).strip()})" if safe_str(n.data.get("subtype")).strip() else "")
+                                + (f" ({_kind_label(n.data)})" if _kind_label(n.data) else "")
                             )
                         )
                     )

@@ -1,8 +1,7 @@
 {
-  "id": "place_toilet",
+  "id": "place_room",
   "label": "Room (place)",
-  "description": "Deprecated alias of a generic room container. Prefer place_room.",
-  "hidden": true,
+  "description": "A room/container within a building. No direct emissions; attach equipment templates to child assets.",
   "core_type": "place",
   "subtype": "room",
   "current_role": "passive",

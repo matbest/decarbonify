@@ -1,9 +1,10 @@
 {
   "id": "place_hall",
-  "label": "Hall (place)",
-  "description": "A hall/room container. No direct emissions; attach equipment templates to child assets.",
+  "label": "Room (place)",
+  "description": "Deprecated alias of a generic room container. Prefer place_room.",
+  "hidden": true,
   "core_type": "place",
-  "subtype": "hall",
+  "subtype": "room",
   "current_role": "passive",
   "inputs": [],
   "outputs": [
