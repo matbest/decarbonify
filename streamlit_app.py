@@ -71,9 +71,7 @@ from decarbonify.ui_asset_detail import render_asset_detail_and_recommendations
 from decarbonify.ui_chat import render_chat
 from decarbonify.ui_sidebar import (
     inject_sidebar_nowrap_css,
-    log_selection_debug,
     render_asset_hierarchy_sidebar,
-    render_selection_debug_sidebar,
 )
 
 
@@ -328,8 +326,7 @@ def _refresh_only() -> None:
 def _set_selected_node_id(new_id: str, *, source: str) -> None:
     prev = safe_str(st.session_state.get("selected_node_id"))
     st.session_state.selected_node_id = new_id
-    if new_id != prev:
-        log_selection_debug(source, prev=prev, new=new_id)
+    # ...existing code...
 
 # Ensure stable ids exist for all assets (idempotent).
 ensure_asset_ids(portfolio, id_key="_id")
@@ -347,7 +344,7 @@ if st.session_state.get("portfolio_fp") != current_fp:
     # Avoid remounting the hierarchy component on fingerprint-only changes.
     # Remounts can replay transient selection behavior and cause visual bounce.
     # Structural edits already bump asset_tree_nonce via explicit code paths.
-    log_selection_debug("app.portfolio_fp.changed", old=old_fp, new=current_fp)
+    # ...existing code...
 
 if "selected_node_id" not in st.session_state:
     _set_selected_node_id(nodes[0].node_id if nodes else "", source="app.init.default_selection")
@@ -372,7 +369,7 @@ with st.sidebar:
         tree_key=tree_key,
     )
     _set_selected_node_id(selected_node_id, source="app.after_sidebar_return")
-    render_selection_debug_sidebar(tree_key=tree_key)
+    # ...debug sidebar removed...
 
     # Explicit save control (in addition to auto-save on changes)
     if st.button("Save to Drive", use_container_width=True):

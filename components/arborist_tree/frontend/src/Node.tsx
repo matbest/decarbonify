@@ -50,8 +50,15 @@ export default function Node({ node, style, dragHandle, onUserSelect }: Props) {
         paddingRight: 8,
         boxSizing: "border-box",
         cursor: node.isEditing ? "text" : "pointer",
-        background: node.isSelected ? "rgba(0, 0, 0, 0.08)" : "transparent",
+        background: node.willReceiveDrop
+          ? "rgba(25, 118, 210, 0.15)"
+          : node.isSelected
+            ? "rgba(0, 0, 0, 0.08)"
+            : "transparent",
         borderLeft: node.isSelected ? "3px solid rgba(0, 0, 0, 0.35)" : "3px solid transparent",
+        outline: node.willReceiveDrop ? "2px dashed rgba(25, 118, 210, 0.6)" : "none",
+        outlineOffset: "-2px",
+        borderRadius: node.willReceiveDrop ? 4 : 0,
       }}
       ref={dragHandle}
       title={label}

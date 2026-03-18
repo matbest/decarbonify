@@ -6,6 +6,8 @@ export type ArboristNode = {
   suffix?: string;
   hasType?: boolean;
   retired?: boolean;
+  /** Hierarchy category for containment rules: land | building | room | place | component | other */
+  cat?: string;
   children?: ArboristNode[];
 };
 
@@ -24,4 +26,5 @@ export type ArboristComponentValue = {
   selectedId: string;
   lastAction: ArboristAction | null;
   lastActionId: number;
+  errors?: string[];
 };

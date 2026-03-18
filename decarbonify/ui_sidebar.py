@@ -385,6 +385,7 @@ def _build_arborist_component_tree_data(
             "suffix": suffix,
             "hasType": bool(safe_str(asset.get("asset_type_id")).strip()),
             "retired": bool(is_retired(asset)),
+            "cat": hierarchy_category(asset),
         }
 
         children = as_list(asset.get("assets"))
@@ -417,47 +418,6 @@ section[data-testid="stSidebar"] .stRadio [role="radiogroup"] label div {
     )
 
 
-def log_selection_debug(source: str, **data: Any) -> None:
-    if not bool(st.session_state.get("selection_debug_enabled")):
-        return
-
-    trace_key = "selection_debug_trace"
-    trace = st.session_state.get(trace_key)
-    if not isinstance(trace, list):
-        trace = []
-
-    entry: Dict[str, Any] = {
-        "t": round(time.time(), 3),
-        "source": safe_str(source),
-    }
-    for k, v in data.items():
-        entry[safe_str(k)] = v
-
-    trace.append(entry)
-    if len(trace) > 200:
-        trace = trace[-200:]
-    st.session_state[trace_key] = trace
-
-
-def render_selection_debug_sidebar(*, tree_key: str) -> None:
-    enabled = bool(st.session_state.get("selection_debug_enabled"))
-    st.checkbox(
-        "Debug hierarchy selection",
-        key="selection_debug_enabled",
-        help="Capture and display a trace of selection events and Python-side selection writes.",
-    )
-    if not enabled:
-        return
-
-    if st.button("Clear selection trace", key="selection_debug_clear", use_container_width=True):
-        st.session_state["selection_debug_trace"] = []
-
-    trace = st.session_state.get("selection_debug_trace")
-    items = trace[-40:] if isinstance(trace, list) else []
-
-    with st.expander("Selection trace", expanded=True):
-        st.caption(f"tree_key={tree_key}")
-        st.json(items)
 
 
 def render_asset_hierarchy_sidebar(
@@ -505,11 +465,6 @@ def render_asset_hierarchy_sidebar(
         if arborist_tree_available():
             comp_tree_data = _build_arborist_component_tree_data(roots, id_key="_id", subtree_totals=subtree_totals)
 
-            log_selection_debug(
-                "sidebar.render.before_component",
-                tree_key=tree_key,
-                selected_id=selected_id,
-            )
             state = arborist_tree(
                 data=comp_tree_data,
                 selection=selected_id,
@@ -521,24 +476,11 @@ def render_asset_hierarchy_sidebar(
 
             # ── Selection: read the component's current selectedId (state, not event) ──
             comp_selected = safe_str(state.get("selectedId"))
-            log_selection_debug(
-                "sidebar.render.after_component",
-                tree_key=tree_key,
-                selected_id=selected_id,
-                comp_selected=comp_selected,
-                state=state,
-            )
 
             if comp_selected and comp_selected in node_by_id:
                 prev_sid = safe_str(st.session_state.get("selected_node_id"))
                 if comp_selected != prev_sid:
                     st.session_state.selected_node_id = comp_selected
-                    log_selection_debug(
-                        "sidebar.state.selection_changed",
-                        tree_key=tree_key,
-                        prev=prev_sid,
-                        new=comp_selected,
-                    )
 
             # ── Actions: process rename/move via lastAction with dedup ──
             last_action_id = int(state.get("lastActionId", 0) or 0)
@@ -550,6 +492,7 @@ def render_asset_hierarchy_sidebar(
                 st.session_state[action_id_key] = last_action_id
                 action_type = safe_str(last_action.get("type"))
 
+
                 if action_type == "rename":
                     cid = safe_str(last_action.get("id"))
                     new_name = safe_str(last_action.get("name"))
@@ -560,12 +503,6 @@ def render_asset_hierarchy_sidebar(
                         else:
                             ref.asset["name"] = new_name.strip()
                             st.session_state.selected_node_id = cid
-                            log_selection_debug(
-                                "sidebar.action.rename",
-                                tree_key=tree_key,
-                                id=cid,
-                                action_id=last_action_id,
-                            )
                             st.session_state.asset_tree_initialized = False
                             st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
                             st.rerun()
@@ -586,12 +523,6 @@ def render_asset_hierarchy_sidebar(
                             st.warning(msg)
                         else:
                             st.session_state.selected_node_id = moved_id
-                            log_selection_debug(
-                                "sidebar.action.move",
-                                tree_key=tree_key,
-                                id=moved_id,
-                                action_id=last_action_id,
-                            )
                             st.session_state.asset_tree_initialized = False
                             st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
                             st.rerun()
@@ -602,13 +533,24 @@ def render_asset_hierarchy_sidebar(
                     selection_changed = True
                 selected_node_id = new_id
 
-            log_selection_debug(
-                "sidebar.render.return",
-                tree_key=tree_key,
-                selected_node_id=selected_node_id,
-                selection_changed=selection_changed,
-            )
 
+
+            # ── Persistent error console ──
+            errors = state.get("errors")
+            if isinstance(errors, list) and errors:
+                if "hierarchy_error_log" not in st.session_state:
+                    st.session_state["hierarchy_error_log"] = []
+                # Only append new errors
+                prev_log = st.session_state["hierarchy_error_log"]
+                new_errors = [e for e in errors if e not in prev_log]
+                if new_errors:
+                    st.session_state["hierarchy_error_log"] = prev_log + new_errors
+                with st.expander("Hierarchy Console", expanded=True):
+                    for err in st.session_state["hierarchy_error_log"][-20:]:
+                        st.write(f"❌ {err}")
+                    if st.button("Clear console", key="clear_hierarchy_console", use_container_width=True):
+                        st.session_state["hierarchy_error_log"] = []
+                        st.experimental_rerun()
             return selected_node_id, selection_changed
     except Exception:
         pass
