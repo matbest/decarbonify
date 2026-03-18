@@ -63,14 +63,18 @@ try:
 except Exception:  # pragma: no cover
     def ensure_asset_ontology_fields(portfolio: Dict[str, Any]) -> None:  # type: ignore
         return
-from decarbonify.portfolio_reorder import PortfolioReorderError, can_move_preorder, move_preorder
 from decarbonify.recommendations import openai_client_available
 from decarbonify.state_store import load_portfolio_state, save_portfolio_state
 from decarbonify.ontology import CORE_TYPES, normalize_core_type
 from decarbonify.portfolio_edit import add_child_asset, explain_disallowed_child_assets, remove_asset_snapshot
 from decarbonify.ui_asset_detail import render_asset_detail_and_recommendations
 from decarbonify.ui_chat import render_chat
-from decarbonify.ui_sidebar import inject_sidebar_nowrap_css, render_asset_hierarchy_sidebar
+from decarbonify.ui_sidebar import (
+    inject_sidebar_nowrap_css,
+    log_selection_debug,
+    render_asset_hierarchy_sidebar,
+    render_selection_debug_sidebar,
+)
 
 
 DEFAULT_PORTFOLIO_PATH = "portfolio.json"
@@ -320,6 +324,13 @@ def _refresh_only() -> None:
     st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
     st.rerun()
 
+
+def _set_selected_node_id(new_id: str, *, source: str) -> None:
+    prev = safe_str(st.session_state.get("selected_node_id"))
+    st.session_state.selected_node_id = new_id
+    if new_id != prev:
+        log_selection_debug(source, prev=prev, new=new_id)
+
 # Ensure stable ids exist for all assets (idempotent).
 ensure_asset_ids(portfolio, id_key="_id")
 # Ensure data_fields schema exists for all assets (idempotent).
@@ -331,14 +342,17 @@ nodes, node_by_id = index_portfolio(portfolio)
 
 current_fp = _portfolio_fingerprint(portfolio)
 if st.session_state.get("portfolio_fp") != current_fp:
+    old_fp = safe_str(st.session_state.get("portfolio_fp"))
     st.session_state.portfolio_fp = current_fp
-    st.session_state.asset_tree_initialized = False
-    st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
+    # Avoid remounting the hierarchy component on fingerprint-only changes.
+    # Remounts can replay transient selection behavior and cause visual bounce.
+    # Structural edits already bump asset_tree_nonce via explicit code paths.
+    log_selection_debug("app.portfolio_fp.changed", old=old_fp, new=current_fp)
 
 if "selected_node_id" not in st.session_state:
-    st.session_state.selected_node_id = nodes[0].node_id if nodes else ""
+    _set_selected_node_id(nodes[0].node_id if nodes else "", source="app.init.default_selection")
 elif st.session_state.selected_node_id and st.session_state.selected_node_id not in node_by_id:
-    st.session_state.selected_node_id = nodes[0].node_id if nodes else ""
+    _set_selected_node_id(nodes[0].node_id if nodes else "", source="app.init.invalid_selection_reset")
 
 
 with st.sidebar:
@@ -357,37 +371,8 @@ with st.sidebar:
         portfolio_fp=current_fp,
         tree_key=tree_key,
     )
-    st.session_state.selected_node_id = selected_node_id
-
-    if st.session_state.selected_node_id:
-        can_up = can_move_preorder(portfolio, node_id=st.session_state.selected_node_id, direction=-1)
-        can_down = can_move_preorder(portfolio, node_id=st.session_state.selected_node_id, direction=1)
-        up_col, down_col = st.columns(2, gap="small")
-        with up_col:
-            if st.button("Up", use_container_width=True, disabled=not can_up):
-                try:
-                    move_preorder(portfolio, node_id=st.session_state.selected_node_id, direction=-1)
-
-                    st.caption("Reorder applied locally. Click 'Save to Drive' to persist.")
-
-                    st.session_state.asset_tree_initialized = False
-                    st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
-                    st.rerun()
-                except PortfolioReorderError as exc:
-                    st.error(str(exc))
-
-        with down_col:
-            if st.button("Down", use_container_width=True, disabled=not can_down):
-                try:
-                    move_preorder(portfolio, node_id=st.session_state.selected_node_id, direction=1)
-
-                    st.caption("Reorder applied locally. Click 'Save to Drive' to persist.")
-
-                    st.session_state.asset_tree_initialized = False
-                    st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
-                    st.rerun()
-                except PortfolioReorderError as exc:
-                    st.error(str(exc))
+    _set_selected_node_id(selected_node_id, source="app.after_sidebar_return")
+    render_selection_debug_sidebar(tree_key=tree_key)
 
     # Explicit save control (in addition to auto-save on changes)
     if st.button("Save to Drive", use_container_width=True):
@@ -403,6 +388,15 @@ with st.sidebar:
             st.success(msg)
         else:
             st.warning("Not saved to Drive: " + msg)
+
+    st.divider()
+    render_chat(
+        portfolio=portfolio,
+        nodes=nodes,
+        selected_node=node_by_id.get(st.session_state.selected_node_id),
+        show_intake=True,
+        show_portfolio=False,
+    )
 
 
 selected_node = node_by_id.get(st.session_state.selected_node_id)
@@ -543,7 +537,7 @@ with st.sidebar:
                     if not snap:
                         st.error("Couldn't delete the asset (not found).")
                     else:
-                        st.session_state.selected_node_id = safe_str(snap.parent_id) or ""
+                        _set_selected_node_id(safe_str(snap.parent_id) or "", source="app.delete.asset_parent_select")
                         st.session_state.pop(confirm_key, None)
                         _refresh_only()
 
@@ -608,7 +602,7 @@ if not selected_node:
             ensure_asset_ontology_fields(portfolio)
             ensure_asset_ontology_fields(portfolio)
 
-            st.session_state.selected_node_id = new_id
+            _set_selected_node_id(new_id, source="app.add_root.select_new")
             st.session_state.asset_tree_initialized = False
             st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
             for k in ("add_root_name", "add_root_core_type", "add_root_subtype", "add_root_desc"):
@@ -618,4 +612,10 @@ else:
     render_asset_detail_and_recommendations(portfolio=portfolio, selected_node=selected_node)
 
 st.divider()
-render_chat(portfolio=portfolio, nodes=nodes, selected_node=selected_node)
+render_chat(
+    portfolio=portfolio,
+    nodes=nodes,
+    selected_node=selected_node,
+    show_intake=False,
+    show_portfolio=True,
+)

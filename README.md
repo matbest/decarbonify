@@ -21,6 +21,29 @@ This app lets an organisation describe its property portfolio as a hierarchical 
 
 The app loads `portfolio.json` by default.
 
+## Optional: React Arborist sidebar (DnD + rename)
+
+This repo includes an optional local Streamlit Component (React + react-arborist) that enables:
+
+- Drag-and-drop reorder / re-parent
+- Inline rename
+- Single selection sync
+
+If you don't build it, the app will fall back to `streamlit-arborist` (or a simple radio list).
+
+Build the component frontend:
+
+- `cd components/arborist_tree/frontend`
+- `npm install`
+- `npm run build`
+
+Dev mode (hot reload):
+
+- `cd components/arborist_tree/frontend`
+- `npm install`
+- `npm run dev`
+- set `DECARBONIFY_ARB_DEV_URL` to the dev server URL (usually `http://localhost:5173`)
+
 ## Login (Google)
 
 This app uses **Google OAuth (OpenID Connect)** for login.

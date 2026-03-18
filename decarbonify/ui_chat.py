@@ -21,246 +21,262 @@ from .portfolio_io import ensure_asset_ids, safe_str
 from .portfolio_edit import add_child_asset, can_add_child
 
 
-def render_chat(*, portfolio: Dict[str, Any], nodes: List[AssetNode], selected_node: AssetNode | None) -> None:
-    st.subheader("Chat")
+def render_intake_chat(*, portfolio: Dict[str, Any], nodes: List[AssetNode], selected_node: AssetNode | None) -> None:
+    st.markdown("### Freeform intake (AI)")
+    st.caption("Paste any text (listing, notes, PDF copy/paste). I’ll draft structured portfolio changes and questions.")
 
-    with st.expander("Freeform intake (AI)", expanded=False):
-        st.caption("Paste any text (listing, notes, PDF copy/paste). I’ll draft structured portfolio changes and questions.")
+    if "intake_freeform_text" not in st.session_state:
+        st.session_state.intake_freeform_text = ""
+    if "intake_draft" not in st.session_state:
+        st.session_state.intake_draft = None
+    if "intake_ref_to_id" not in st.session_state:
+        st.session_state.intake_ref_to_id = {}
+    if "intake_applied_ops" not in st.session_state:
+        st.session_state.intake_applied_ops = set()
+    if "intake_attach_to_selected" not in st.session_state:
+        st.session_state.intake_attach_to_selected = False
 
-        if "intake_freeform_text" not in st.session_state:
-            st.session_state.intake_freeform_text = ""
-        if "intake_draft" not in st.session_state:
-            st.session_state.intake_draft = None
-        if "intake_ref_to_id" not in st.session_state:
-            st.session_state.intake_ref_to_id = {}
-        if "intake_applied_ops" not in st.session_state:
-            st.session_state.intake_applied_ops = set()
-        if "intake_attach_to_selected" not in st.session_state:
-            st.session_state.intake_attach_to_selected = False
+    def _op_hash(op: Dict[str, Any]) -> str:
+        try:
+            payload = json.dumps(op, sort_keys=True, ensure_ascii=False)
+        except Exception:
+            payload = str(op)
+        return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
-        def _op_hash(op: Dict[str, Any]) -> str:
-            try:
-                payload = json.dumps(op, sort_keys=True, ensure_ascii=False)
-            except Exception:
-                payload = str(op)
-            return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+    st.checkbox(
+        "Attach new items under currently selected asset",
+        key="intake_attach_to_selected",
+        help="Off (default) drafts new sites/land at the portfolio root. Turn on only when the text describes something that belongs inside the selected asset.",
+    )
 
-        st.checkbox(
-            "Attach new items under currently selected asset",
-            key="intake_attach_to_selected",
-            help="Off (default) drafts new sites/land at the portfolio root. Turn on only when the text describes something that belongs inside the selected asset.",
-        )
+    st.text_area(
+        "Input",
+        key="intake_freeform_text",
+        height=140,
+        placeholder="e.g. 3-bed house, gas boiler, loft insulation, 12 LED downlights...",
+    )
 
-        st.text_area(
-            "Input",
-            key="intake_freeform_text",
-            height=140,
-            placeholder="e.g. 3-bed house, gas boiler, loft insulation, 12 LED downlights...",
-        )
-
-        col_a, col_b = st.columns([1, 1])
-        with col_a:
-            if st.button("AI: draft changes", key="intake_draft_btn"):
-                with st.spinner("Drafting changes..."):
-                    st.session_state.intake_ref_to_id = {}
-                    st.session_state.intake_applied_ops = set()
-                    st.session_state.intake_draft = llm_draft_intake_ops(
-                        portfolio=portfolio,
-                        nodes=nodes,
-                        selected_node=selected_node if bool(st.session_state.get("intake_attach_to_selected")) else None,
-                        freeform_text=safe_str(st.session_state.intake_freeform_text),
-                    )
-        with col_b:
-            if st.button("Clear", key="intake_clear_btn"):
-                st.session_state.intake_draft = None
-                st.session_state.intake_freeform_text = ""
+    col_a, col_b = st.columns([1, 1])
+    with col_a:
+        if st.button("AI: draft changes", key="intake_draft_btn"):
+            with st.spinner("Drafting changes..."):
                 st.session_state.intake_ref_to_id = {}
                 st.session_state.intake_applied_ops = set()
+                st.session_state.intake_draft = llm_draft_intake_ops(
+                    portfolio=portfolio,
+                    nodes=nodes,
+                    selected_node=selected_node if bool(st.session_state.get("intake_attach_to_selected")) else None,
+                    freeform_text=safe_str(st.session_state.intake_freeform_text),
+                )
+    with col_b:
+        if st.button("Clear", key="intake_clear_btn"):
+            st.session_state.intake_draft = None
+            st.session_state.intake_freeform_text = ""
+            st.session_state.intake_ref_to_id = {}
+            st.session_state.intake_applied_ops = set()
 
-        draft = st.session_state.get("intake_draft")
-        if isinstance(draft, dict):
-            status = safe_str(draft.get("status") or "").strip()
-            notes = safe_str(draft.get("notes") or "").strip()
-            ops = draft.get("ops") if isinstance(draft.get("ops"), list) else []
-            questions = draft.get("open_questions") if isinstance(draft.get("open_questions"), list) else []
-            assumptions = draft.get("assumptions") if isinstance(draft.get("assumptions"), list) else []
+    draft = st.session_state.get("intake_draft")
+    if isinstance(draft, dict):
+        status = safe_str(draft.get("status") or "").strip()
+        notes = safe_str(draft.get("notes") or "").strip()
+        ops = draft.get("ops") if isinstance(draft.get("ops"), list) else []
+        questions = draft.get("open_questions") if isinstance(draft.get("open_questions"), list) else []
+        assumptions = draft.get("assumptions") if isinstance(draft.get("assumptions"), list) else []
 
-            if status:
-                st.write(f"Status: {status}")
-            if notes:
-                st.write(notes)
+        if status:
+            st.write(f"Status: {status}")
+        if notes:
+            st.write(notes)
 
-            if ops:
-                st.markdown("**Proposed changes**")
+        if ops:
+            st.markdown("**Proposed changes**")
 
-                def _op_ready(op: Dict[str, Any], ref_map: Dict[str, str]) -> bool:
-                    op_name = safe_str(op.get("op")).strip().lower()
-                    if op_name == "add_asset":
-                        parent_id = safe_str(op.get("parent_id")).strip()
-                        parent_ref = safe_str(op.get("parent_ref")).strip()
-                        if parent_id:
-                            return True
-                        if parent_ref:
-                            return parent_ref in ref_map
+            def _op_ready(op: Dict[str, Any], ref_map: Dict[str, str]) -> bool:
+                op_name = safe_str(op.get("op")).strip().lower()
+                if op_name == "add_asset":
+                    parent_id = safe_str(op.get("parent_id")).strip()
+                    parent_ref = safe_str(op.get("parent_ref")).strip()
+                    if parent_id:
                         return True
-                    if op_name in {"apply_template", "update_asset"}:
-                        asset_id = safe_str(op.get("asset_id")).strip()
-                        asset_ref = safe_str(op.get("asset_ref")).strip()
-                        return bool(asset_id) or (asset_ref in ref_map)
+                    if parent_ref:
+                        return parent_ref in ref_map
                     return True
+                if op_name in {"apply_template", "update_asset"}:
+                    asset_id = safe_str(op.get("asset_id")).strip()
+                    asset_ref = safe_str(op.get("asset_ref")).strip()
+                    return bool(asset_id) or (asset_ref in ref_map)
+                return True
 
-                ref_map = st.session_state.get("intake_ref_to_id")
-                if not isinstance(ref_map, dict):
-                    ref_map = {}
-                    st.session_state.intake_ref_to_id = ref_map
+            ref_map = st.session_state.get("intake_ref_to_id")
+            if not isinstance(ref_map, dict):
+                ref_map = {}
+                st.session_state.intake_ref_to_id = ref_map
 
-                applied_ops = st.session_state.get("intake_applied_ops")
-                if not isinstance(applied_ops, set):
-                    applied_ops = set()
-                    st.session_state.intake_applied_ops = applied_ops
+            applied_ops = st.session_state.get("intake_applied_ops")
+            if not isinstance(applied_ops, set):
+                applied_ops = set()
+                st.session_state.intake_applied_ops = applied_ops
 
-                op_lines = summarize_ops_for_ui(ops=ops, nodes=nodes)
-                for idx, (op, line) in enumerate(zip(ops, op_lines)):
-                    ready = _op_ready(op, ref_map)
-                    op_key = _op_hash(op)
-                    already_applied = op_key in applied_ops
-                    c1, c2 = st.columns([6, 1])
-                    with c1:
-                        st.write(f"- {line}")
-                    with c2:
-                        if st.button(
-                            "Applied" if already_applied else "Apply",
-                            key=f"intake_apply_one::{idx}",
-                            disabled=(already_applied or (not ready)),
-                            help=("Apply earlier ops first" if not ready else ""),
-                        ):
-                            with st.spinner("Applying op..."):
-                                summary = apply_intake_ops(
-                                    portfolio=portfolio,
-                                    nodes=nodes,
-                                    selected_node=selected_node,
-                                    ops=[op],
-                                    existing_ref_to_id=ref_map,
-                                )
-                                st.session_state.intake_ref_to_id = summary.ref_to_id
+            op_lines = summarize_ops_for_ui(ops=ops, nodes=nodes)
+            for idx, (op, line) in enumerate(zip(ops, op_lines)):
+                ready = _op_ready(op, ref_map)
+                op_key = _op_hash(op)
+                already_applied = op_key in applied_ops
+                c1, c2 = st.columns([6, 1])
+                with c1:
+                    st.write(f"- {line}")
+                with c2:
+                    if st.button(
+                        "Applied" if already_applied else "Apply",
+                        key=f"intake_apply_one::{idx}",
+                        disabled=(already_applied or (not ready)),
+                        help=("Apply earlier ops first" if not ready else ""),
+                    ):
+                        with st.spinner("Applying op..."):
+                            summary = apply_intake_ops(
+                                portfolio=portfolio,
+                                nodes=nodes,
+                                selected_node=selected_node,
+                                ops=[op],
+                                existing_ref_to_id=ref_map,
+                            )
+                            st.session_state.intake_ref_to_id = summary.ref_to_id
 
-                                if summary.results and summary.results[0].ok:
-                                    applied_ops.add(op_key)
+                            if summary.results and summary.results[0].ok:
+                                applied_ops.add(op_key)
 
-                                if summary.last_added_asset_id:
-                                    st.session_state.selected_node_id = summary.last_added_asset_id
-                                st.session_state.asset_tree_initialized = False
-                                st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
+                            if summary.last_added_asset_id:
+                                st.session_state.selected_node_id = summary.last_added_asset_id
+                            st.session_state.asset_tree_initialized = False
+                            st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
 
-                                st.session_state.intake_apply_summary = {
-                                    "ok": summary.ok_count,
-                                    "total": len(summary.results),
-                                    "ref_to_id": summary.ref_to_id,
-                                    "failures": [r.message for r in summary.results if not r.ok][:8],
-                                }
+                            st.session_state.intake_apply_summary = {
+                                "ok": summary.ok_count,
+                                "total": len(summary.results),
+                                "ref_to_id": summary.ref_to_id,
+                                "failures": [r.message for r in summary.results if not r.ok][:8],
+                            }
 
-                                st.rerun()
+                            st.rerun()
 
-                if st.button("Apply all", key="intake_apply_btn"):
-                    with st.spinner("Applying changes..."):
-                        summary = apply_intake_ops(
-                            portfolio=portfolio,
-                            nodes=nodes,
-                            selected_node=selected_node,
-                            ops=ops,
-                            existing_ref_to_id=ref_map,
-                        )
+            if st.button("Apply all", key="intake_apply_btn"):
+                with st.spinner("Applying changes..."):
+                    summary = apply_intake_ops(
+                        portfolio=portfolio,
+                        nodes=nodes,
+                        selected_node=selected_node,
+                        ops=ops,
+                        existing_ref_to_id=ref_map,
+                    )
 
-                        # Mark successful ops as applied so their buttons stay disabled.
-                        for r in summary.results:
-                            if r.ok and isinstance(r.op, dict):
-                                applied_ops.add(_op_hash(r.op))
+                    # Mark successful ops as applied so their buttons stay disabled.
+                    for r in summary.results:
+                        if r.ok and isinstance(r.op, dict):
+                            applied_ops.add(_op_hash(r.op))
 
-                        if summary.last_added_asset_id:
-                            st.session_state.selected_node_id = summary.last_added_asset_id
+                    if summary.last_added_asset_id:
+                        st.session_state.selected_node_id = summary.last_added_asset_id
+                    st.session_state.asset_tree_initialized = False
+                    st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
+                    st.session_state.intake_ref_to_id = summary.ref_to_id
+
+                    st.session_state.intake_apply_summary = {
+                        "ok": summary.ok_count,
+                        "total": len(summary.results),
+                        "ref_to_id": summary.ref_to_id,
+                        "failures": [r.message for r in summary.results if not r.ok][:8],
+                    }
+
+                    st.rerun()
+
+        if questions:
+            st.markdown("**Open questions**")
+            for q in questions:
+                qq = safe_str(q).strip()
+                if qq:
+                    st.write(f"- {qq}")
+
+        if assumptions:
+            st.markdown("**Assumptions**")
+            for a in assumptions:
+                aa = safe_str(a).strip()
+                if aa:
+                    st.write(f"- {aa}")
+
+        applied = st.session_state.get("intake_apply_summary")
+        if isinstance(applied, dict) and applied.get("total"):
+            ok_n = int(applied.get("ok") or 0)
+            total_n = int(applied.get("total") or 0)
+            if ok_n == total_n:
+                st.success(f"Applied {ok_n}/{total_n} ops")
+            else:
+                st.warning(f"Applied {ok_n}/{total_n} ops")
+                for msg in applied.get("failures") or []:
+                    mm = safe_str(msg).strip()
+                    if mm:
+                        st.write(f"- {mm}")
+
+    # Duplicate suggestions (user-confirmed merge)
+    try:
+        dups = suggest_duplicate_assets(nodes=nodes)
+    except Exception:
+        dups = []
+    if dups:
+        st.divider()
+        st.markdown("**Possible duplicates**")
+        st.caption("These are name-based matches only. Merge only if you’re sure.")
+
+        for d in dups:
+            a_id = safe_str(d.get("a_id")).strip()
+            b_id = safe_str(d.get("b_id")).strip()
+            a_path = safe_str(d.get("a_path")).strip()
+            b_path = safe_str(d.get("b_path")).strip()
+            score = float(d.get("score") or 0.0)
+
+            if not a_id or not b_id:
+                continue
+
+            st.write(f"- {a_path}  ↔  {b_path}  (match={score:.2f})")
+
+            col1, col2 = st.columns([1, 1])
+            with col1:
+                if st.button("Merge left → right", key=f"dup_merge_lr::{a_id}::{b_id}"):
+                    ok, msg = merge_assets(portfolio=portfolio, source_id=a_id, target_id=b_id)
+                    if ok:
+                        st.session_state.selected_node_id = b_id
                         st.session_state.asset_tree_initialized = False
                         st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
-                        st.session_state.intake_ref_to_id = summary.ref_to_id
-
-                        st.session_state.intake_apply_summary = {
-                            "ok": summary.ok_count,
-                            "total": len(summary.results),
-                            "ref_to_id": summary.ref_to_id,
-                            "failures": [r.message for r in summary.results if not r.ok][:8],
-                        }
-
                         st.rerun()
+                    else:
+                        st.error(msg)
+            with col2:
+                if st.button("Merge right → left", key=f"dup_merge_rl::{a_id}::{b_id}"):
+                    ok, msg = merge_assets(portfolio=portfolio, source_id=b_id, target_id=a_id)
+                    if ok:
+                        st.session_state.selected_node_id = a_id
+                        st.session_state.asset_tree_initialized = False
+                        st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
+                        st.rerun()
+                    else:
+                        st.error(msg)
 
-            if questions:
-                st.markdown("**Open questions**")
-                for q in questions:
-                    qq = safe_str(q).strip()
-                    if qq:
-                        st.write(f"- {qq}")
 
-            if assumptions:
-                st.markdown("**Assumptions**")
-                for a in assumptions:
-                    aa = safe_str(a).strip()
-                    if aa:
-                        st.write(f"- {aa}")
+def render_chat(
+    *,
+    portfolio: Dict[str, Any],
+    nodes: List[AssetNode],
+    selected_node: AssetNode | None,
+    show_intake: bool = True,
+    show_portfolio: bool = True,
+) -> None:
+    if show_portfolio:
+        st.subheader("Chat")
 
-            applied = st.session_state.get("intake_apply_summary")
-            if isinstance(applied, dict) and applied.get("total"):
-                ok_n = int(applied.get("ok") or 0)
-                total_n = int(applied.get("total") or 0)
-                if ok_n == total_n:
-                    st.success(f"Applied {ok_n}/{total_n} ops")
-                else:
-                    st.warning(f"Applied {ok_n}/{total_n} ops")
-                    for msg in applied.get("failures") or []:
-                        mm = safe_str(msg).strip()
-                        if mm:
-                            st.write(f"- {mm}")
+    if show_intake:
+        render_intake_chat(portfolio=portfolio, nodes=nodes, selected_node=selected_node)
 
-        # Duplicate suggestions (user-confirmed merge)
-        try:
-            dups = suggest_duplicate_assets(nodes=nodes)
-        except Exception:
-            dups = []
-        if dups:
-            st.divider()
-            st.markdown("**Possible duplicates**")
-            st.caption("These are name-based matches only. Merge only if you’re sure.")
-
-            for d in dups:
-                a_id = safe_str(d.get("a_id")).strip()
-                b_id = safe_str(d.get("b_id")).strip()
-                a_path = safe_str(d.get("a_path")).strip()
-                b_path = safe_str(d.get("b_path")).strip()
-                score = float(d.get("score") or 0.0)
-
-                if not a_id or not b_id:
-                    continue
-
-                st.write(f"- {a_path}  ↔  {b_path}  (match={score:.2f})")
-
-                col1, col2 = st.columns([1, 1])
-                with col1:
-                    if st.button("Merge left → right", key=f"dup_merge_lr::{a_id}::{b_id}"):
-                        ok, msg = merge_assets(portfolio=portfolio, source_id=a_id, target_id=b_id)
-                        if ok:
-                            st.session_state.selected_node_id = b_id
-                            st.session_state.asset_tree_initialized = False
-                            st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
-                            st.rerun()
-                        else:
-                            st.error(msg)
-                with col2:
-                    if st.button("Merge right → left", key=f"dup_merge_rl::{a_id}::{b_id}"):
-                        ok, msg = merge_assets(portfolio=portfolio, source_id=b_id, target_id=a_id)
-                        if ok:
-                            st.session_state.selected_node_id = a_id
-                            st.session_state.asset_tree_initialized = False
-                            st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
-                            st.rerun()
-                        else:
-                            st.error(msg)
+    if not show_portfolio:
+        return
 
     def _scroll_container(*, height: int):
         try:

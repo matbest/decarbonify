@@ -266,3 +266,84 @@ def mark_asset_active(asset: Dict[str, Any]) -> None:
     status = safe_str(lifecycle.get("status")).lower()
     if status == "retired":
         lifecycle["status"] = "active"
+
+
+def move_asset(
+    portfolio: Dict[str, Any],
+    *,
+    asset_id: str,
+    new_parent_id: Optional[str],
+    index: int,
+    id_key: str = "_id",
+) -> tuple[bool, str]:
+    """Move an asset to a new parent at a given child index.
+
+    - new_parent_id=None means move to portfolio root.
+    - index is clamped into the destination list bounds.
+
+    This mutates the portfolio in-place.
+    """
+
+    aid = safe_str(asset_id).strip()
+    if not aid:
+        return False, "Missing asset_id"
+
+    ref = find_asset_ref(portfolio, asset_id=aid, id_key=id_key)
+    if not ref:
+        return False, "Asset not found"
+
+    moved_asset = ref.asset
+
+    # Prevent moving a node into itself or one of its descendants.
+    pid = safe_str(new_parent_id).strip() if new_parent_id else ""
+    if pid and pid == aid:
+        return False, "An asset cannot be moved into itself."
+
+    if pid:
+        stack: List[Dict[str, Any]] = [moved_asset]
+        while stack:
+            current = stack.pop()
+            if safe_str(current.get(id_key)) == pid:
+                return False, "An asset cannot be moved into its own subtree."
+            for ch in as_list(current.get("assets")):
+                if isinstance(ch, dict):
+                    stack.append(ch)
+
+    # Compute destination list.
+    if pid:
+        parent_ref = find_asset_ref(portfolio, asset_id=pid, id_key=id_key)
+        if not parent_ref:
+            return False, "New parent not found"
+
+        disallowed = explain_disallowed_child_assets(parent_asset=parent_ref.asset, child_asset=moved_asset)
+        if disallowed:
+            return False, disallowed
+
+        children = parent_ref.asset.get("assets")
+        if not isinstance(children, list):
+            children = []
+            parent_ref.asset["assets"] = children
+        dest_list: List[Dict[str, Any]] = children
+    else:
+        roots = portfolio.get("assets")
+        if not isinstance(roots, list):
+            roots = []
+            portfolio["assets"] = roots
+        dest_list = roots
+
+    # Remove from current parent list then insert into destination.
+    old_list = ref.parent_list
+    old_idx = int(ref.index_in_parent)
+    if old_idx < 0 or old_idx >= len(old_list):
+        return False, "Invalid current index"
+
+    insert_at = max(0, min(int(index), len(dest_list)))
+    moved = old_list.pop(old_idx)
+
+    # Adjust insert index when moving within the same list.
+    if old_list is dest_list and old_idx < insert_at:
+        insert_at -= 1
+
+    insert_at = max(0, min(int(insert_at), len(dest_list)))
+    dest_list.insert(insert_at, moved)
+    return True, "moved"

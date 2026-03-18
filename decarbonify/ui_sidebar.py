@@ -3,12 +3,14 @@ from __future__ import annotations
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from functools import lru_cache
+import time
 
 import streamlit as st
 
 from .asset_types import list_asset_type_summaries, load_asset_type
 from .emissions import is_retired
 from .ontology import display_kind, hierarchy_category, normalize_core_type, normalize_energy_role
+from .portfolio_edit import find_asset_ref, move_asset
 from .portfolio_index import AssetNode
 from .portfolio_io import as_list, safe_str
 from .recommendations import (
@@ -234,7 +236,6 @@ def _node_icon(asset: Dict[str, Any]) -> str:
 
     return _fallback_core_type_icon(asset)
 
-
 def _asset_savings_tco2_per_year(asset: Dict[str, Any]) -> Tuple[float, float]:
     """Return (done, possible) savings for a single asset.
 
@@ -350,6 +351,54 @@ def _build_arborist_tree_data(
     return tree
 
 
+def _build_arborist_component_tree_data(
+    assets: List[Dict[str, Any]],
+    *,
+    id_key: str = "_id",
+    subtree_totals: Mapping[str, Tuple[float, float]],
+) -> List[Dict[str, Any]]:
+    """Build node data for the local React Arborist Streamlit Component.
+
+    Unlike `_build_arborist_tree_data`, this avoids Streamlit markdown styling and
+    instead provides structured fields for rendering/rename/DnD.
+    """
+
+    tree: List[Dict[str, Any]] = []
+    for idx, asset in enumerate(assets):
+        if not isinstance(asset, dict):
+            continue
+        node_id = safe_str(asset.get(id_key))
+        if not node_id:
+            # Skip nodes without stable ids; they can't be safely selected/moved/renamed.
+            continue
+
+        name = safe_str(asset.get("name", f"Unnamed {idx}"))
+        icon = _node_icon(asset)
+        kind = _kind_label(asset)
+        suffix = _format_subtree_suffix(node_id, subtree_totals=subtree_totals)
+
+        node: Dict[str, Any] = {
+            "id": node_id,
+            "name": name,
+            "icon": icon,
+            "kind": kind,
+            "suffix": suffix,
+            "hasType": bool(safe_str(asset.get("asset_type_id")).strip()),
+            "retired": bool(is_retired(asset)),
+        }
+
+        children = as_list(asset.get("assets"))
+        if children:
+            node["children"] = _build_arborist_component_tree_data(
+                children,
+                id_key=id_key,
+                subtree_totals=subtree_totals,
+            )
+        tree.append(node)
+
+    return tree
+
+
 def inject_sidebar_nowrap_css() -> None:
     st.markdown(
         """
@@ -366,6 +415,49 @@ section[data-testid="stSidebar"] .stRadio [role="radiogroup"] label div {
 """,
         unsafe_allow_html=True,
     )
+
+
+def log_selection_debug(source: str, **data: Any) -> None:
+    if not bool(st.session_state.get("selection_debug_enabled")):
+        return
+
+    trace_key = "selection_debug_trace"
+    trace = st.session_state.get(trace_key)
+    if not isinstance(trace, list):
+        trace = []
+
+    entry: Dict[str, Any] = {
+        "t": round(time.time(), 3),
+        "source": safe_str(source),
+    }
+    for k, v in data.items():
+        entry[safe_str(k)] = v
+
+    trace.append(entry)
+    if len(trace) > 200:
+        trace = trace[-200:]
+    st.session_state[trace_key] = trace
+
+
+def render_selection_debug_sidebar(*, tree_key: str) -> None:
+    enabled = bool(st.session_state.get("selection_debug_enabled"))
+    st.checkbox(
+        "Debug hierarchy selection",
+        key="selection_debug_enabled",
+        help="Capture and display a trace of selection events and Python-side selection writes.",
+    )
+    if not enabled:
+        return
+
+    if st.button("Clear selection trace", key="selection_debug_clear", use_container_width=True):
+        st.session_state["selection_debug_trace"] = []
+
+    trace = st.session_state.get("selection_debug_trace")
+    items = trace[-40:] if isinstance(trace, list) else []
+
+    with st.expander("Selection trace", expanded=True):
+        st.caption(f"tree_key={tree_key}")
+        st.json(items)
 
 
 def render_asset_hierarchy_sidebar(
@@ -405,6 +497,121 @@ def render_asset_hierarchy_sidebar(
     tree_data = _build_arborist_tree_data(roots, id_key="_id", subtree_totals=subtree_totals)
     selected_id: Optional[str] = selected_node_id or None
     selection_changed = False
+
+    # Prefer the local React Arborist Streamlit Component (supports DnD + inline rename).
+    try:
+        from .arborist_component import arborist_tree, arborist_tree_available
+
+        if arborist_tree_available():
+            comp_tree_data = _build_arborist_component_tree_data(roots, id_key="_id", subtree_totals=subtree_totals)
+
+            log_selection_debug(
+                "sidebar.render.before_component",
+                tree_key=tree_key,
+                selected_id=selected_id,
+            )
+            state = arborist_tree(
+                data=comp_tree_data,
+                selection=selected_id,
+                height=600,
+                key=tree_key,
+            )
+            if not isinstance(state, dict):
+                state = {}
+
+            # ── Selection: read the component's current selectedId (state, not event) ──
+            comp_selected = safe_str(state.get("selectedId"))
+            log_selection_debug(
+                "sidebar.render.after_component",
+                tree_key=tree_key,
+                selected_id=selected_id,
+                comp_selected=comp_selected,
+                state=state,
+            )
+
+            if comp_selected and comp_selected in node_by_id:
+                prev_sid = safe_str(st.session_state.get("selected_node_id"))
+                if comp_selected != prev_sid:
+                    st.session_state.selected_node_id = comp_selected
+                    log_selection_debug(
+                        "sidebar.state.selection_changed",
+                        tree_key=tree_key,
+                        prev=prev_sid,
+                        new=comp_selected,
+                    )
+
+            # ── Actions: process rename/move via lastAction with dedup ──
+            last_action_id = int(state.get("lastActionId", 0) or 0)
+            last_action = state.get("lastAction")
+            action_id_key = f"{tree_key}::last_action_id"
+            prev_action_id = int(st.session_state.get(action_id_key, 0) or 0)
+
+            if last_action_id and last_action_id > prev_action_id and isinstance(last_action, dict):
+                st.session_state[action_id_key] = last_action_id
+                action_type = safe_str(last_action.get("type"))
+
+                if action_type == "rename":
+                    cid = safe_str(last_action.get("id"))
+                    new_name = safe_str(last_action.get("name"))
+                    if cid and new_name.strip():
+                        ref = find_asset_ref(portfolio, asset_id=cid)
+                        if not ref:
+                            st.warning("Could not rename: asset not found.")
+                        else:
+                            ref.asset["name"] = new_name.strip()
+                            st.session_state.selected_node_id = cid
+                            log_selection_debug(
+                                "sidebar.action.rename",
+                                tree_key=tree_key,
+                                id=cid,
+                                action_id=last_action_id,
+                            )
+                            st.session_state.asset_tree_initialized = False
+                            st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
+                            st.rerun()
+
+                elif action_type == "move":
+                    drag_ids = last_action.get("dragIds")
+                    parent_id = safe_str(last_action.get("parentId"))
+                    idx = int(last_action.get("index", 0) or 0)
+                    if isinstance(drag_ids, list) and drag_ids:
+                        moved_id = safe_str(drag_ids[0])
+                        ok, msg = move_asset(
+                            portfolio,
+                            asset_id=moved_id,
+                            new_parent_id=parent_id or None,
+                            index=idx,
+                        )
+                        if not ok:
+                            st.warning(msg)
+                        else:
+                            st.session_state.selected_node_id = moved_id
+                            log_selection_debug(
+                                "sidebar.action.move",
+                                tree_key=tree_key,
+                                id=moved_id,
+                                action_id=last_action_id,
+                            )
+                            st.session_state.asset_tree_initialized = False
+                            st.session_state.asset_tree_nonce = int(st.session_state.get("asset_tree_nonce", 0)) + 1
+                            st.rerun()
+
+            new_id = safe_str(st.session_state.get("selected_node_id"))
+            if new_id and new_id in node_by_id:
+                if new_id != selected_node_id:
+                    selection_changed = True
+                selected_node_id = new_id
+
+            log_selection_debug(
+                "sidebar.render.return",
+                tree_key=tree_key,
+                selected_node_id=selected_node_id,
+                selection_changed=selection_changed,
+            )
+
+            return selected_node_id, selection_changed
+    except Exception:
+        pass
 
     def _sync_arborist_selection() -> None:
         candidate = st.session_state.get(tree_key)
