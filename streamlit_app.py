@@ -79,7 +79,10 @@ DEFAULT_PORTFOLIO_PATH = "portfolio.json"
 def _configure_openai_env_from_streamlit_secrets() -> None:
     """Populate OpenAI env vars from Streamlit secrets (local or Streamlit Cloud).
 
-    The OpenAI Python client reads OPENAI_API_KEY from the environment by default.
+    The OpenAI Python client reads OPENAI_API_KEY (and OPENAI_BASE_URL) from the
+    environment by default. Setting OPENAI_BASE_URL lets the same client target any
+    OpenAI-compatible endpoint — e.g. OpenRouter (https://openrouter.ai/api/v1),
+    with a free model id in OPENAI_MODEL.
     """
 
     if os.environ.get("OPENAI_API_KEY"):
@@ -119,6 +122,20 @@ def _configure_openai_env_from_streamlit_secrets() -> None:
 
             if model:
                 os.environ["OPENAI_MODEL"] = model
+
+        # Optional: a custom OpenAI-compatible endpoint (e.g. OpenRouter).
+        # The OpenAI client reads OPENAI_BASE_URL from the environment.
+        if not os.environ.get("OPENAI_BASE_URL"):
+            base_url = None
+            if "OPENAI_BASE_URL" in st.secrets:
+                base_url = str(st.secrets.get("OPENAI_BASE_URL") or "").strip()
+            else:
+                openai_section = st.secrets.get("openai")
+                if openai_section is not None and hasattr(openai_section, "get"):
+                    base_url = str(openai_section.get("base_url") or "").strip()
+
+            if base_url:
+                os.environ["OPENAI_BASE_URL"] = base_url
     except Exception:
         # Secrets might not be configured; env vars may be used instead.
         return
